@@ -111,7 +111,7 @@ template's layering discipline.
 | `plugin.yaml` | manifest (`name`, `kind: standalone`, `version`) — required for discovery | — |
 | `__init__.py` | `register(ctx)`: register the `transform_llm_output` callback; the callback orchestrates and **returns** a replacement string or `None`; **internally fail-closed** (abstain on any error, never raise) | effectful edge |
 | `envelope.py` | parse/strip the canonical envelope `⟦conf=… grounded=… missing=…⟧`; reject lookalikes | pure |
-| `classify.py` | claim-bearing vs chatter heuristic | pure |
+| `classify.py` | claim-bearing vs chatter heuristic (conservative — defaults to *claim* when unsure; see §Classification) | pure |
 | `policy.py` | gate decision from (is_claim, envelope, threshold) → `pass` / `abstain` | pure |
 | `render.py` | build the abstention message + optional confidence badge | pure |
 | `gateconfig.py` | read `war_room.*` from `<profile>/config.yaml` (stdlib line scan of the managed block) | IO |
@@ -163,6 +163,23 @@ unchanged) or a replacement string.
 | claim | valid | < threshold | any | **abstain** (state `missing`) |
 | claim | missing/malformed | — | — | **abstain** (fail closed) |
 | (any) | — | — | — | on internal error: **abstain** (never raise — Hermes is fail-open) |
+
+### Classification (conservative bias — load-bearing)
+
+`kind` defaults to **claim** whenever there is any doubt. Only two things are
+chatter and skip the gate:
+1. an **exact** match in a small closed set of acks/greetings (`ok`, `thanks`,
+   `on it`, `done`, 👍, …); and
+2. a **pure question** (asking, not asserting — no declarative sentence).
+
+Everything else is a claim and must clear the gate. **Do not exempt a message
+merely for being short.** Terse declaratives — "it's down", "payments are
+failing", "db is corrupted" — are claims, and a short *ungrounded* assertion is
+exactly what the gate exists to stop. The asymmetry is deliberate: a
+false-**abstain** on a real claim is safe (the room sees the gap and what would
+unblock it); a false-**pass** on a terse claim is the failure mode to avoid. Any
+length-based heuristic that routes short text to *chatter* is therefore a bug,
+not a convenience — it must not exist.
 
 **Severity (idea #5):** v1 uses a single profile-wide `min_confidence`. A future
 DEFCON model can raise the threshold per board severity by rewriting the managed

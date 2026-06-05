@@ -208,13 +208,21 @@ from typing import Optional, Tuple
 
 GROUNDED_VOCAB = ("tool", "file", "source", "citation", "memory", "none")
 
-# Bounded quantifiers only -> linear, ReDoS-safe.
+# Sentinel brackets as \uXXXX escapes so the matching logic never depends on how
+# the source file's non-ASCII bytes are decoded. U+27E6/U+27E7 = the ⟦ / ⟧ pair.
+_L = "\u27e6"
+_R = "\u27e7"
+
+# Bounded quantifiers only -> linear, ReDoS-safe. Strict closing (a single _R,
+# no optional open bracket) keeps the grammar tight for anti-spoof.
 _ENV_RE = re.compile(
-    r"^⟦conf=(?P<conf>0(?:\.\d{1,3})?|1(?:\.0{1,3})?)"
-    r" grounded=(?P<grounded>[a-z,]{1,64})"
-    r" missing=(?P<missing>[^⟧\n]{0,200})⟦?⟧$"
+    "^" + _L
+    + r"conf=(?P<conf>0(?:\.\d{1,3})?|1(?:\.0{1,3})?)"
+    + r" grounded=(?P<grounded>[a-z,]{1,64})"
+    + r" missing=(?P<missing>[^" + _L + _R + r"\n]{0,200})"
+    + _R + "$"
 )
-_STRAY_RE = re.compile(r"⟦conf=[^⟧\n]{0,300}⟧")
+_STRAY_RE = re.compile(_L + r"conf=[^" + _R + r"\n]{0,300}" + _R)
 
 
 @dataclass
@@ -246,8 +254,12 @@ def strip_stray_envelopes(text):
     return _STRAY_RE.sub("", text)
 ```
 
-> Note the regex uses `⟦`/`⟧` (the `⟦`/`⟧` brackets) so the file is
-> ASCII-safe. The trailing `⟦?⟧` tolerates either `⟧` or a stray `⟦⟧`.
+> The bracket sentinels (`⟦`=U+27E6, `⟧`=U+27E7) are written as `\uXXXX` escapes
+> in the matching code, so the gate logic never depends on how the source file's
+> non-ASCII bytes are decoded; the canonical form is shown literally in the
+> docstring only for readability (the file is UTF-8). The grammar is strict: a
+> single closing `⟧`, and `missing` excludes *both* sentinels — so a stray or
+> nested bracket (e.g. `…missing=x⟦⟧`) is rejected, not absorbed (anti-spoof).
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -512,7 +524,7 @@ def with_badge(body, conf, show):
     if not show:
         return body
     pct = int(round(conf * 100))
-    return body.rstrip("\n") + "\n\n- ✓ %d%%" % pct
+    return body.rstrip("\n") + "\n\n- \u2713 %d%%" % pct
 ```
 
 - [ ] **Step 4: Run to verify it passes**
