@@ -28,46 +28,96 @@ the bar never reaches the channel.
   message is treated as confidence 0 → abstain. This is what forces the agent to
   ground its claims to be heard at all.
 
-## Where it hooks in (verified)
+## Where it hooks in (VERIFIED against Hermes source — corrected)
 
-Hermes exposes `pre_gateway_dispatch` in `VALID_HOOKS`
-(`hermes_cli/plugins.py:127-167`) — a runtime hook that fires on an outbound
-gateway message before it is sent to the channel. That is the single chokepoint
-for every Discord/Slack message the agent emits, and therefore the enforcement
-point. The hook is declared in the profile `config.yaml` `hooks:` block
-(`agent/shell_hooks.py`) and requires hook consent (`hooks_auto_accept: true` or
-`--accept-hooks`) — see Security.
+> **Correction (research 2026-06-05):** the first draft named
+> `pre_gateway_dispatch`. Source proves that hook is **inbound** — it fires on the
+> *user's* `MessageEvent` before auth and can `skip`/`rewrite`/`allow` the incoming
+> text (`gateway/run.py:7226-7265`). It is **not** the agent's outbound reply.
+> Using it would gate the wrong direction. The correct hook is
+> **`transform_llm_output`**.
+
+`transform_llm_output` (`agent/conversation_loop.py:4588-4608`) fires **once per
+turn after the tool-calling loop completes, before the response is returned/sent**.
+Contract (verified):
+- **Receives:** `response_text` (the agent's final output), `session_id`, `model`,
+  `platform`.
+- **Return:** the **first hook to return a non-empty string wins and replaces**
+  `final_response`; `None`/empty leaves it unchanged. → the gate can **rewrite to
+  the abstention message in place** (resolves the old Q1 — no separate `hermes
+  send` needed) and can strip the envelope.
+
+**Mechanism = a Hermes Python PLUGIN, not a `config.yaml` shell hook
+(VERIFIED).** A shell hook *cannot* transform LLM output: `shell_hooks._parse_response`
+(`agent/shell_hooks.py:496-539`) only translates `pre_tool_call` (block) and
+`pre_llm_call` (context) and returns `None` for everything else — so a shell
+command's stdout is ignored for `transform_llm_output`. Only an **in-process
+plugin callback** registered via `ctx.register_hook("transform_llm_output", fn)`
+can return the replacement string (`hermes_cli/plugins.py:935`,
+`conversation_loop.py:4592-4606`).
+
+**Packaging + discovery (VERIFIED).** A plugin is a directory with a `plugin.yaml`
+manifest **and** an `__init__.py` exposing `register(ctx)`
+(`plugins.py:19`, `:1248`). User plugins load from `get_hermes_home()/plugins`
+(`plugins.py:1078`), and the gateway runs with `HERMES_HOME=<profile dir>`
+(`gateway.py:2378`, `:777-780`). Therefore a plugin shipped **inside the
+distribution at `<profile>/plugins/warroom-gate/`** is auto-discovered when the
+gateway starts — no global install, no `hooks_auto_accept` consent. It is gated
+only by `plugins.enabled: true` in `config.yaml` (which the template sets).
+
+**Two constraints this imposes (load-bearing):**
+1. **No `chat_id` / no session-evidence object in the hook payload.** The gate
+   therefore operates **profile-wide** (every outbound turn of a dedicated
+   war-room agent), keyed only on `war_room.enforce` — it cannot do per-channel
+   thresholds, and it cannot independently inspect the session's tool/evidence
+   trail. The **only grounding signal available in-hook is the agent's
+   envelope**. → an independent verifier pass is **deferred** (see §Verifier).
+2. **Hermes is fail-OPEN on hook error:** if the hook raises, the `except` logs
+   and leaves `final_response` unchanged (`conversation_loop.py:4607-4608`) — the
+   ungated claim would pass. → **our hook must be internally fail-CLOSED:** catch
+   all internal errors and **return the abstention string** rather than raising.
+   (A test asserts the top-level hook never propagates an exception on a claim.)
 
 ```
-agent produces outbound message
+agent finishes turn → final_response
         │
         ▼
-pre_gateway_dispatch hook (this sub-project)
-        │  parse canonical envelope → classify claim vs chatter → gate
-        ├─ chatter / non-claim ............................ pass through unchanged
-        ├─ claim, envelope valid, conf ≥ threshold, grounded → strip envelope, pass (optional badge)
-        ├─ claim, conf < threshold OR ungrounded OR no envelope → SUPPRESS, replace with abstention
-        └─ high-severity board → run independent verifier before passing
+transform_llm_output hook (this sub-project) — returns a string (replace) or None (unchanged)
+        │  parse canonical envelope (last line only) → classify claim vs chatter → gate
+        ├─ chatter / non-claim ............................ return None (unchanged)
+        ├─ claim, envelope valid, conf ≥ threshold, grounded → return text minus envelope (+ optional badge)
+        ├─ claim, conf < threshold OR ungrounded OR no/!envelope → return ABSTENTION string
+        └─ internal error on a claim ...................... return ABSTENTION string (fail closed)
         │
         ▼
-message (or abstention) delivered to channel ; gate decision logged
+final_response (possibly replaced) is sent to the channel ; gate decision logged
 ```
+
+**Streaming caveat:** for platforms that stream tokens live, a post-hoc replace
+cannot un-send already-streamed text (tests note the transform "modified the
+final text after streaming"). Discord/Slack send a buffered final message, so the
+replacement is what users see there; the terminal/ACP streaming surfaces are out
+of the war-room scope. Documented, not solved.
 
 ## Architecture & components
 
-A small stdlib package `warroom_gate/` shipped by the template distribution
-(under the profile, like `warroom_setup/`) and wired via `config.yaml` `hooks:`.
-Pure core + a thin hook adapter, mirroring the template's layering discipline.
+A plugin directory **shipped inside the distribution** at
+`plugins/warroom-gate/` (so it lands at `<profile>/plugins/warroom-gate/` and is
+auto-discovered — see above). Pure core + a thin plugin edge, mirroring the
+template's layering discipline.
 
-| Module | Responsibility | Pure? |
+| File | Responsibility | Pure? |
 |---|---|---|
+| `plugin.yaml` | manifest (`name`, `kind: standalone`, `version`) — required for discovery | — |
+| `__init__.py` | `register(ctx)`: register the `transform_llm_output` callback; the callback orchestrates and **returns** a replacement string or `None`; **internally fail-closed** (abstain on any error, never raise) | effectful edge |
 | `envelope.py` | parse/strip the canonical envelope `⟦conf=… grounded=… missing=…⟧`; reject lookalikes | pure |
 | `classify.py` | claim-bearing vs chatter heuristic | pure |
-| `policy.py` | gate decision from (envelope, threshold, severity) → `pass` / `abstain` / `verify` | pure |
-| `verifier.py` | optional independent support-check pass (high-severity only) | effectful (LLM) |
+| `policy.py` | gate decision from (is_claim, envelope, threshold) → `pass` / `abstain` | pure |
 | `render.py` | build the abstention message + optional confidence badge | pure |
+| `gateconfig.py` | read `war_room.*` from `<profile>/config.yaml` (stdlib line scan of the managed block) | IO |
 | `audit.py` | append-only gate-decision log (no secrets) | IO |
-| `hook.py` | `pre_gateway_dispatch` adapter: read config, orchestrate, return transformed/suppressed message | effectful edge |
+
+*(No `verifier.py` in v1 — the callback has no session-evidence access; see §Verifier.)*
 
 Import direction points downward to the pure leaves; `hook.py` is the only place
 effects compose. Same invariants as the template (pure core unit-tested without
@@ -102,19 +152,22 @@ the agent to append to claim-bearing messages:
 ## Gate policy (decision table)
 
 Inputs: `kind` (claim|chatter), `env` (valid|missing|malformed), `conf`,
-`grounded`, `threshold = war_room.min_confidence/100`, `severity`.
+`grounded`, `threshold = war_room.min_confidence/100`. Output: `None` (leave
+unchanged) or a replacement string.
 
-| kind | envelope | conf vs threshold | grounded | severity | decision |
-|---|---|---|---|---|---|
-| chatter | any | — | — | any | **pass** (strip stray envelope) |
-| claim | valid | ≥ threshold | non-empty | normal | **pass** (+ optional badge) |
-| claim | valid | ≥ threshold | empty/`none` | any | **abstain** (grounded≠∅ required for a factual claim) |
-| claim | valid | < threshold | any | any | **abstain** (state `missing`) |
-| claim | missing/malformed | — | — | any | **abstain** (fail closed) |
-| claim | valid | ≥ threshold | non-empty | **alert 1–2** | **verify** → pass only if verifier confirms, else abstain |
+| kind | envelope | conf vs threshold | grounded | decision (return value) |
+|---|---|---|---|---|
+| chatter | any | — | — | **pass** → `None` if no envelope, else text-minus-stray-envelope |
+| claim | valid | ≥ threshold | non-empty | **pass** → text minus envelope (+ optional badge) |
+| claim | valid | ≥ threshold | empty/`none` | **abstain** (factual claim needs grounded≠∅) |
+| claim | valid | < threshold | any | **abstain** (state `missing`) |
+| claim | missing/malformed | — | — | **abstain** (fail closed) |
+| (any) | — | — | — | on internal error: **abstain** (never raise — Hermes is fail-open) |
 
-`severity` is read from the board state (idea #5; until that lands, `severity`
-defaults to "normal" and the `verify` branch is inert).
+**Severity (idea #5):** v1 uses a single profile-wide `min_confidence`. A future
+DEFCON model can raise the threshold per board severity by rewriting the managed
+block (no code change here). The independent-verifier branch is **deferred**
+(§Verifier) because the hook lacks session-evidence access.
 
 ## Abstention output
 
@@ -138,48 +191,63 @@ war_room:
   role: contributor
   min_confidence: 75          # Layer 1
   gate_action: abstain        # Layer 1
-  enforce: true               # Layer 2: turn the hook on
+  enforce: true               # Layer 2: gate active (plugin returns None when false)
   show_confidence_badge: true # Layer 2: render ✓/⚠ badge in place of the envelope
-  verify_at_severity: 2       # Layer 2: run independent verifier at/above this alert level
 # <<< warroom-managed <<<
-hooks:
-  pre_gateway_dispatch: python3 -m warroom_gate.hook
-hooks_auto_accept: true       # required for unattended enforcement; see Security
+plugins:
+  enabled: true               # required for the shipped plugins/warroom-gate/ to load
 ```
+
+No `hooks:` block and no `hooks_auto_accept` — those are for *shell* hooks, which
+cannot transform LLM output. The gate is a plugin at `<profile>/plugins/warroom-gate/`,
+discovered automatically when the gateway runs (`HERMES_HOME=<profile>`).
+
+## Verifier (DEFERRED — not in v1)
+
+The brainstorming choice was "grounding + verifier." v1 ships the **grounding**
+half (the envelope + the gate); the **independent verifier** is deferred for a
+hard reason found in research: `transform_llm_output` receives only
+`response_text`/`session_id`/`model`/`platform` — it has **no handle on the
+session's tool/evidence trail**, so a verifier here could only re-judge the text
+against itself (weak, and a second LLM call per turn). A real verifier needs
+evidence access, which means either a different integration point inside the
+agent loop or a Hermes change. Tracked as a follow-up; v1's envelope-grounding
+gate is the enforced mechanism, and Layer 1's protocol still asks the agent to
+self-verify before emitting the envelope.
 
 ## Efficiency
 
-- **Normal path is pure + O(message length):** one regex match + a classification
-  heuristic + a table lookup. No network, no LLM call. Negligible per-message cost.
-- **Verifier pass is gated to high severity only** (`verify_at_severity`), so the
-  expensive path is rare and bounded; it reuses the session's evidence context
-  rather than re-fetching.
-- Hook is stateless except the append-only audit log (buffered).
+- **Whole path is pure + O(message length):** one anchored regex match + a
+  classification heuristic + a table lookup + (on abstain) a small string build.
+  **No network, no LLM call, no extra model turn.** Negligible per-message cost.
+- Hook is stateless except the append-only audit log (line-buffered).
 
 ## Reliability — failure modes (fail-closed where it matters)
 
+**Critical inversion to respect:** Hermes treats a raising hook as *fail-OPEN*
+(`conversation_loop.py:4607-4608` logs and leaves text unchanged). So the hook's
+internal posture must be the opposite — **catch everything and return the
+abstention string** so a bug can never let an ungated claim through.
+
 | Failure | Behavior | Posture |
 |---|---|---|
-| Hook crashes / raises | Hermes hook contract: a failing `pre_gateway_dispatch` must not silently pass an ungated claim. Wrap in try/except → **abstain** on internal error for claim messages; pass chatter. | fail-closed |
-| Envelope malformed | treated as absent → abstain | fail-closed |
-| Verifier unavailable/timeout at high severity | abstain (do not downgrade to self-score) | fail-closed |
-| `war_room.enforce: false` | hook no-ops (Layer 1 protocol still applies) | opt-in |
-| Config unreadable | abstain on claims + log error (do not fail open) | fail-closed |
-
-**Open design question (flagged):** Hermes' exact `pre_gateway_dispatch` contract
-— whether a hook can *replace* an outbound message (needed for abstention) vs only
-*block* it — must be confirmed against `agent/shell_hooks.py` /
-`transform_*` semantics during planning. If it can only block, the abstention is
-posted via a separate `hermes send` call instead of an in-place transform.
+| Internal error on a claim | top-level try/except in `hook.py` → **return abstention** (never raise) | fail-closed |
+| Internal error on chatter | return `None` (unchanged) — chatter carries no claim to gate | safe |
+| Envelope malformed/missing on a claim | treated as absent → abstain | fail-closed |
+| `war_room.enforce: false` | hook returns `None` (Layer 1 protocol still applies) | opt-in |
+| Config unreadable | abstain on claims + log error (do **not** fall through to unchanged) | fail-closed |
+| Live-streamed platform (terminal/ACP) | replacement applies to final text; already-streamed tokens can't be recalled (out of war-room scope) | documented |
 
 ## Security
 
 - **Anti-spoof** (above): only the agent-controlled trailing envelope is trusted;
   user-injected lookalikes are ignored + stripped. The gate treats channel content
   as data, never instructions.
-- **Hook = code-exec-on-dispatch.** Enabling `hooks_auto_accept` runs the hook
-  without prompting. This is opt-in (`enforce: true`) and documented; the hook
-  does no network I/O on the normal path and never reads secrets.
+- **Plugin = in-process code, runs per turn.** It executes only when the gateway
+  runs (install copies files but runs nothing — verified). Trusting it = trusting
+  the distribution you installed. The callback does **no** network I/O and never
+  reads secrets — pure parse/classify/gate over `response_text` + a config read.
+  Governed by `plugins.enabled`; `enforce: false` makes the callback a no-op.
 - **No secret in logs.** `audit.py` records the gate decision, message kind,
   conf, and a hash/prefix of the message — never tokens, never full secret-bearing
   payloads.
@@ -205,9 +273,10 @@ posted via a separate `hermes send` call instead of an in-place transform.
 | regex is linear / no catastrophic backtracking | `test_envelope.py::redos` | security |
 | claim vs chatter classification | `test_classify.py` | unit |
 | full decision table (every row) | `test_policy.py` | unit |
-| severity → verify branch routing | `test_policy.py::severity` | unit |
 | abstention rendering from `missing` | `test_render.py` | unit |
-| hook fail-closed on internal error | `test_hook.py` | integration |
+| hook returns replacement on low-conf claim; `None` on chatter | `test_hook.py` | integration |
+| **hook never raises** (fail-closed): inject a parse bug → still returns abstention | `test_hook.py::never_raises` | security |
+| `enforce:false` → hook returns `None` | `test_hook.py::disabled` | unit |
 | audit log has no secrets | `test_audit.py` | security |
 | e2e: low-conf claim suppressed, chatter passes | manual against a test board | e2e |
 
@@ -217,10 +286,19 @@ posted via a separate `hermes send` call instead of an in-place transform.
   define it.
 - Multi-agent coordination of who answers (AWR mailbox lanes) — orthogonal.
 
-## Open questions to resolve in planning
-1. `pre_gateway_dispatch` replace-vs-block semantics (above) — the one true
-   blocker; confirm against Hermes source before writing `hook.py`.
-2. How `severity` is surfaced to the hook before idea #5 exists (default
-   "normal"; later read from board state).
-3. Whether the verifier reuses the agent's model/provider or a cheaper fixed one
-   (cost vs latency on high-severity messages).
+## Open questions — RESOLVED by research (2026-06-05)
+1. ~~Hook replace-vs-block semantics~~ → **RESOLVED.** Wrong hook in draft 1;
+   correct hook is `transform_llm_output`, which **replaces** the output by
+   returning a non-empty string (`conversation_loop.py:4592-4606`). Abstention is
+   an in-place replacement — no separate send. The hook is also profile-wide (no
+   `chat_id`) and must be internally fail-closed (Hermes is fail-open on raise).
+2. ~~How `severity` reaches the hook~~ → **RESOLVED (deferred design):** v1 is
+   single-threshold profile-wide; DEFCON raises it later by rewriting the managed
+   block, no hook change. The hook does not need live severity in v1.
+3. ~~Verifier model choice~~ → **RESOLVED (deferred feature):** no independent
+   verifier in v1 — the hook has no session-evidence access (§Verifier). The
+   envelope-grounding gate is the enforced mechanism; verifier is a tracked
+   follow-up needing an in-loop integration point.
+
+The implementation plan for this spec is
+`docs/superpowers/plans/2026-06-05-war-room-confidence-gate.md`.
