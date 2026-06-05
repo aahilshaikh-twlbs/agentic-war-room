@@ -2390,6 +2390,254 @@ git commit -m "AWR template: record e2e smoke verification"
 
 ---
 
+## Task 16: Security & structural hardening (implements spec §C, §A.3)
+
+Adds the controls the spec's security model declares load-bearing: 0600 secrets,
+slug validation, and negative/structural tests (no network imports, no import
+cycles, pure `state.py`, no shipped symlinks, secrets never persisted).
+
+**Files:**
+- Create: `template/.gitignore`
+- Modify: `template/warroom_setup/agent_model.py` (chmod 0600 on save)
+- Modify: `template/warroom_setup/answers.py` (chmod 0600 on save)
+- Modify: `template/warroom_setup/setup.py` (atomic+0600 `.env`, 0700 `local/`, slug validation)
+- Test: `template/tests/test_security.py`
+
+- [ ] **Step 1: Write `template/.gitignore`**
+
+```gitignore
+.env
+.env.local
+local/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+```
+
+- [ ] **Step 2: Write the failing test `tests/test_security.py`**
+
+```python
+import ast
+import os
+import stat
+from pathlib import Path
+
+import warroom_setup
+from warroom_setup import answers, setup as setup_mod
+
+PKG = Path(warroom_setup.__file__).resolve().parent
+ROOT = PKG.parent
+
+
+def _module_files():
+    return sorted(p for p in PKG.glob("*.py") if p.name != "__init__.py")
+
+
+def test_no_network_imports_in_package():
+    banned = {"socket", "urllib", "http", "requests", "ftplib", "telnetlib", "smtplib"}
+    for f in _module_files():
+        tree = ast.parse(f.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for n in node.names:
+                    assert n.name.split(".")[0] not in banned, f"{f.name} imports {n.name}"
+            elif isinstance(node, ast.ImportFrom):
+                assert (node.module or "").split(".")[0] not in banned, f"{f.name} from {node.module}"
+
+
+def test_state_module_is_pure_no_io():
+    tree = ast.parse((PKG / "state.py").read_text())
+    banned = {"os", "sys", "termios", "tty", "select", "io", "subprocess"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for n in node.names:
+                assert n.name not in banned, f"state.py imports {n.name}"
+        elif isinstance(node, ast.ImportFrom):
+            assert (node.module or "") not in banned, f"state.py from {node.module}"
+
+
+def test_no_module_imports_cli_or_setup_except_entrypoints():
+    for f in _module_files():
+        if f.name in ("cli.py", "setup.py", "__main__.py"):
+            continue
+        text = f.read_text()
+        assert "from .cli" not in text and "from .setup" not in text, f"{f.name} creates a cycle"
+
+
+def test_no_shell_true_or_os_system():
+    for f in _module_files():
+        text = f.read_text()
+        assert "os.system" not in text, f"{f.name} uses os.system"
+        assert "shell=True" not in text, f"{f.name} uses shell=True"
+
+
+def test_distribution_ships_no_symlinks():
+    skip = {".venv", "__pycache__", ".pytest_cache", ".git", ".egg-info"}
+    for p in ROOT.rglob("*"):
+        if any(part in skip or part.endswith(".egg-info") for part in p.parts):
+            continue
+        assert not p.is_symlink(), f"Hermes rejects distributions with symlinks: {p}"
+
+
+def test_answers_save_strips_secrets_and_is_0600(tmp_path):
+    p = tmp_path / ".warroom-setup.json"
+    answers.save(p, answers.Answers(values={"agent_name": "z", "ANTHROPIC_API_KEY": "sk-x"}))
+    assert "sk-x" not in p.read_text()
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o600
+
+
+def test_write_env_is_0600(tmp_path):
+    (tmp_path / ".env.EXAMPLE").write_text("ANTHROPIC_API_KEY=\n")
+    setup_mod.write_env(tmp_path, {"ANTHROPIC_API_KEY": "sk-secret"})
+    assert stat.S_IMODE(os.stat(tmp_path / ".env").st_mode) == 0o600
+
+
+def test_validate_slug():
+    assert setup_mod._validate_slug("warroom")
+    assert setup_mod._validate_slug("aria-1")
+    assert not setup_mod._validate_slug("Bad Name")
+    assert not setup_mod._validate_slug("1leading")
+    assert not setup_mod._validate_slug("")
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `cd template && python3 -m pytest tests/test_security.py -v`
+Expected: FAIL — `_validate_slug` missing; `.env`/answers not yet 0600.
+
+- [ ] **Step 4: Modify `agent_model.py` — chmod the saved file 0600**
+
+Replace the end of `save`:
+
+```python
+    os.replace(tmp, str(path))
+```
+
+with:
+
+```python
+    os.replace(tmp, str(path))
+    try:
+        os.chmod(str(path), 0o600)   # identity may carry no secret, but keep local/ uniformly private
+    except OSError:
+        pass
+```
+
+- [ ] **Step 5: Modify `answers.py` — chmod the saved file 0600**
+
+Replace the end of `save`:
+
+```python
+    os.replace(tmp, str(path))
+```
+
+with:
+
+```python
+    os.replace(tmp, str(path))
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+```
+
+- [ ] **Step 6: Modify `setup.py` — add imports, validation, atomic+0600 `.env`, 0700 `local/`**
+
+Add to the imports at the top of `setup.py`:
+
+```python
+import os
+import re
+import stat
+```
+
+Add these helpers after the imports:
+
+```python
+_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+
+def _validate_slug(s):
+    # type: (str) -> bool
+    return bool(_SLUG_RE.match(s or ""))
+
+
+def _slugify(s):
+    # type: (str) -> str
+    return re.sub(r"[^a-z0-9-]", "-", (s or "").lower()).strip("-") or "warroom"
+
+
+def _secure_file(path):
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+
+
+def _secure_dir(path):
+    try:
+        os.chmod(str(path), 0o700)
+    except OSError:
+        pass
+```
+
+In `seed_overlay`, after `dst.mkdir(parents=True, exist_ok=True)` add:
+
+```python
+    _secure_dir(profile_root / "local")
+```
+
+In `write_env`, replace the final line:
+
+```python
+    env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+```
+
+with an atomic write + chmod:
+
+```python
+    tmp = str(env_path) + ".tmp"
+    Path(tmp).write_text("\n".join(out) + "\n", encoding="utf-8")
+    os.replace(tmp, str(env_path))
+    _secure_file(env_path)
+```
+
+In `run_setup`, immediately after `handle = ...` and `display = ...` are computed, add validation:
+
+```python
+        if not _validate_slug(agent_name):
+            out_stream.write("  agent_name %r invalid (need ^[a-z][a-z0-9-]*$); slugifying\n" % agent_name)
+            agent_name = _slugify(agent_name)
+            ident_prefix = agent_name
+        if not _validate_slug(handle):
+            handle = agent_name
+```
+
+(Then ensure `specialist_prefix=agent_name` in the `AgentIdentity(...)` call already reflects the validated `agent_name` — it does, since it is constructed after this block.)
+
+- [ ] **Step 7: Run test to verify it passes**
+
+Run: `cd template && python3 -m pytest tests/test_security.py -v`
+Expected: 8 passed.
+
+- [ ] **Step 8: Run the FULL suite (regression gate)**
+
+Run: `cd template && python3 -m pytest -q`
+Expected: all tests green (Tasks 0-16).
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add template/.gitignore template/tests/test_security.py \
+        template/warroom_setup/agent_model.py template/warroom_setup/answers.py \
+        template/warroom_setup/setup.py
+git commit -m "AWR template: security & structural hardening (0600 secrets, slug validation, negative tests)"
+```
+
+---
+
 ## Self-Review (completed by plan author)
 
 **Spec coverage:**
@@ -2403,6 +2651,10 @@ git commit -m "AWR template: record e2e smoke verification"
 - §Risk 1 (subdir install) → resolved: local install + Task 13 publish. ✅
 - §Risk 2 (distribution schema) → resolved: Task 0 uses verified schema. ✅
 - §Risk 3 (post-install overlap) → resolved: no native hook; explicit setup + optional guard. ✅
+- Spec §C security model (0600 secrets, slug validation, no-network, no symlinks, secret-strip) → Task 16. ✅
+- Spec §A.3 invariants I1 (purity), import-graph acyclicity → Task 16 structural tests. ✅
+- Spec §I coverage matrix → `test_security.py` realizes the security/structural row; all other rows map to Tasks 0-11. ✅
+- Spec §B schema_version / migrate shim → NOT yet a task (deferred; current `load()` is already forward-compatible via `data.get` defaults). Flagged below.
 
 **Placeholder scan:** No "TBD"/"implement later". `<<FILL-IN>>` markers are intentional persona-content placeholders for the END USER, not plan gaps. Every code step has complete code.
 
