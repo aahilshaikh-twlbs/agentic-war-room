@@ -591,9 +591,60 @@ security/structural tests are non-optional.
 
 
 
+## K. Confidence gate (anti-hallucination) — Layer 1 default
+
+**Principle:** a war room must not contain hallucinated answers. "Confidence" is
+**derived from grounding**, never self-asserted as a free-floating number — an
+ungrounded claim scores low *by construction*, so a confident hallucination
+cannot pass. Below the board threshold the agent **abstains and states the gap**
+rather than guessing.
+
+This sub-project (idea #1) ships only **Layer 1 — the protocol default**. The
+structural enforcement hook is **Layer 2**, a sibling sub-project specified in
+`2026-06-05-war-room-confidence-gate-design.md`. Layer 1 is behavioral
+(persona + skill instruction); Layer 2 makes it airtight (a Hermes
+`pre_gateway_dispatch` hook that fails closed). The template is forward-shaped so
+turning Layer 2 on requires no change to Layer 1.
+
+### What Layer 1 adds to the template
+- **`config.yaml` → `war_room.min_confidence` (default 75) + `gate_action: abstain`.**
+  Written inside a sentinel-delimited **managed block** (`# >>> warroom-managed >>>`
+  … `# <<< warroom-managed <<<`) so `warroom setup` can rewrite it idempotently
+  without YAML parsing (stdlib constraint). Layer 2's hook reads these keys.
+- **A `confidence-gate` skill** (`skills/confidence-gate/SKILL.md`) carrying the
+  protocol: ground every claim → score from grounding → gate at threshold →
+  abstain-with-gap below it → append a canonical **confidence envelope**
+  `⟦conf=0.82 grounded=tool,file missing=none⟧` to claim-bearing messages;
+  chatter is exempt. Added to the `/warroom` bundle so every agent loads it.
+- **Persona rule** in `local/persona/decisions.md` ("Confidence & Abstention"):
+  the same protocol baked into the compiled SOUL/head, so it holds even outside
+  a `/warroom` invocation.
+- **Wizard** WarRoom-stage field `warroom.min_confidence` (default 75, clamped
+  0–100), written into the managed block by `setup`.
+
+### Severity hook (forward-compat with idea #5)
+`min_confidence` is a single value today; the managed-block shape lets a future
+DEFCON model override it per severity (Alert 1 raises the bar / demands an
+independent verifier). No Layer 1 rework needed.
+
+### Correctness note (fixes a latent bug)
+`patch_war_room_block` must **update** the managed block in place (not no-op when
+a `war_room:` block already exists), because the shipped `config.yaml` already
+contains one. The managed-marker rewrite makes this robust and idempotent across
+`--reconfigure` runs. (Captured as a correction in the plan's Task 17.)
+
+### Tests (Layer 1)
+- `confidence-gate` skill exists with a `description`; `/warroom` bundle lists it.
+- shipped `config.yaml` contains `min_confidence` inside the managed block.
+- `patch_war_room_block` writes/updates `board` + `min_confidence` idempotently
+  (running it twice yields one managed block, last value wins).
+- threshold input is clamped to 0–100; non-numeric falls back to 75.
+
 ## Open follow-ups (future sub-projects, not this spec)
 
 - L1: Hermes integration layer + orchestrator (makes `/warroom` real).
 - #4: multi-agent / multi-team topology built on this template.
 - #5: severity/DEFCON model feeding the `war_room{}` block.
 - #2/#3: skill pre-brief packs + propagation via Hermes `bundles`/`skills tap`.
+- **Confidence gate Layer 2** (structural enforcement): the `pre_gateway_dispatch`
+  hook — own spec `2026-06-05-war-room-confidence-gate-design.md`. Depends on L1.

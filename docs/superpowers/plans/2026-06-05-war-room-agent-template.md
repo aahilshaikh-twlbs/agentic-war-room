@@ -2638,6 +2638,250 @@ git commit -m "AWR template: security & structural hardening (0600 secrets, slug
 
 ---
 
+## Task 17: Confidence-gate protocol — Layer 1 default (implements spec §K)
+
+Ships the anti-hallucination gate as a behavioral default: a `confidence-gate`
+skill in the `/warroom` bundle, a `war_room.min_confidence` config knob in a
+sentinel-managed block, a persona rule, and a wizard field. **Also fixes a latent
+bug:** Task 9's `patch_war_room_block` no-ops when a `war_room:` block already
+exists, but Task 11 ships one — so setup never wrote the user's board. The
+managed-block rewrite below makes it idempotent.
+
+**Files:**
+- Create: `template/skills/confidence-gate/SKILL.md`
+- Modify: `template/skill-bundles/warroom.yaml` (add `confidence-gate`)
+- Modify: `template/config.yaml` (managed `war_room` block w/ `min_confidence`)
+- Modify: `template/persona/decisions.md` (add "Confidence & Abstention")
+- Modify: `template/warroom_setup/selectables.py` (add `warroom.min_confidence` field)
+- Modify: `template/warroom_setup/setup.py` (managed-block `patch_war_room_block` + clamp)
+- Test: `template/tests/test_confidence_gate.py`
+
+- [ ] **Step 1: Write the failing test `tests/test_confidence_gate.py`**
+
+```python
+import re
+from pathlib import Path
+from warroom_setup import setup
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_confidence_gate_skill_exists_with_description():
+    s = ROOT / "skills" / "confidence-gate" / "SKILL.md"
+    assert s.is_file()
+    assert re.search(r"^description:\s+\S", s.read_text(), re.M)
+
+
+def test_warroom_bundle_includes_confidence_gate():
+    b = (ROOT / "skill-bundles" / "warroom.yaml").read_text()
+    assert re.search(r"^\s*-\s*confidence-gate\s*$", b, re.M)
+
+
+def test_shipped_config_has_min_confidence_in_managed_block():
+    cfg = (ROOT / "config.yaml").read_text()
+    assert setup._WR_BEGIN in cfg and setup._WR_END in cfg
+    assert re.search(r"min_confidence:\s*\d+", cfg)
+
+
+def test_patch_war_room_block_is_idempotent_update(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model: {}\n")
+    setup.patch_war_room_block(tmp_path, "incident-1", min_confidence=80)
+    setup.patch_war_room_block(tmp_path, "incident-2", min_confidence=90)
+    text = cfg.read_text()
+    assert text.count(setup._WR_BEGIN) == 1          # exactly one managed block
+    assert "board: incident-2" in text and "incident-1" not in text
+    assert "min_confidence: 90" in text
+
+
+def test_clamp_min_confidence():
+    assert setup._clamp_pct("150") == 100
+    assert setup._clamp_pct("-5") == 0
+    assert setup._clamp_pct("") == 75
+    assert setup._clamp_pct("abc") == 75
+    assert setup._clamp_pct("82") == 82
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd template && python3 -m pytest tests/test_confidence_gate.py -v`
+Expected: FAIL — skill/bundle/config not updated; `setup._WR_BEGIN`, `_clamp_pct` missing.
+
+- [ ] **Step 3: Write `skills/confidence-gate/SKILL.md`**
+
+```markdown
+---
+name: confidence-gate
+description: War-room anti-hallucination protocol. Every claim posted to a war-room channel must be grounded in evidence and carry a confidence; below the board threshold, abstain and state the gap instead of guessing.
+metadata:
+  hermes:
+    tags: [coordination, war-room, safety]
+---
+
+# Skill: Confidence Gate (war room, not chat room)
+
+A war room must not contain hallucinated answers. Before you post information, an
+answer, or any factual claim to a war-room channel:
+
+1. GROUND IT. Each claim must trace to evidence you actually have this session: a
+   tool result, a file you read, a retrieved source, or a cited message.
+   Assertions with no such backing are ungrounded.
+2. SCORE IT (from grounding, not vibes). Confidence reflects how much of the claim
+   is grounded and how directly. Well-sourced -> high; inference beyond your
+   evidence -> low; guess -> ~0. Do not inflate to suppress uncertainty.
+3. GATE IT against the board threshold (`war_room.min_confidence`, default 75%):
+   - At/above threshold: post the answer + the envelope below.
+   - Below threshold: DO NOT post the claim. Post the gap instead:
+     "Not confident enough to answer (<n>%). To verify I'd need: <what's missing>."
+4. ENVELOPE. End a claim-bearing message with the canonical footer the gate reads:
+       ⟦conf=0.82 grounded=tool,file missing=none⟧
+   conf in [0,1]; grounded = evidence kinds used; missing = what would raise it.
+   Chatter (greetings, acks, clarifying questions) needs no envelope and is not gated.
+
+Higher severity = stricter bar: treat Alert 1/2 boards as demanding independent
+verification, not just self-scoring. Abstaining loudly is correct war-room
+behavior; confident wrongness is not.
+```
+
+- [ ] **Step 4: Update `skill-bundles/warroom.yaml`**
+
+```yaml
+name: warroom
+description: Agentic war-room coordination bundle.
+skills:
+  - warroom
+  - confidence-gate
+instruction: |
+  War-room protocol. Follow confidence-gate before posting any claim to the channel.
+```
+
+- [ ] **Step 5: Replace the `war_room:` block in `config.yaml` with the managed block**
+
+Replace:
+
+```yaml
+war_room:
+  enabled: false       # `warroom setup` flips this on + sets board when you enroll
+  board: default
+  role: contributor
+```
+
+with:
+
+```yaml
+# >>> warroom-managed (set via `warroom setup`) >>>
+war_room:
+  enabled: false
+  board: default
+  role: contributor
+  min_confidence: 75
+  gate_action: abstain
+# <<< warroom-managed <<<
+```
+
+- [ ] **Step 6: Add a "Confidence & Abstention" section to `persona/decisions.md`**
+
+Insert before the `## Related` line:
+
+```markdown
+## Confidence & Abstention (war room)
+
+<<FILL-IN: keep this rule. Claims posted to a war-room channel must be grounded in
+real evidence and carry a confidence derived from that grounding. Below the board
+threshold (war_room.min_confidence), abstain and state what's missing - never post
+an ungrounded guess as fact. See the confidence-gate skill.>>
+```
+
+- [ ] **Step 7: Add the wizard field to `selectables.py`**
+
+Append to `TEXT_FIELDS` (after the `warroom.board` entry):
+
+```python
+    TextField(id="warroom.min_confidence",
+              prompt="War-room min confidence % to post a claim (0-100)",
+              required=False, enable_if="warroom.enroll"),
+```
+
+- [ ] **Step 8: Replace `patch_war_room_block` in `setup.py` + add `_clamp_pct`; update the call site**
+
+Add near the top of `setup.py` (after the helpers from Task 16):
+
+```python
+_WR_BEGIN = "# >>> warroom-managed (set via `warroom setup`) >>>"
+_WR_END = "# <<< warroom-managed <<<"
+
+
+def _clamp_pct(s, default=75):
+    # type: (str, int) -> int
+    s = (s or "").strip()
+    if not s:
+        return default
+    try:
+        return max(0, min(100, int(s)))
+    except ValueError:
+        return default
+```
+
+Replace the entire `patch_war_room_block` function (from Task 9) with:
+
+```python
+def patch_war_room_block(profile_root, board, min_confidence=75, gate_action="abstain"):
+    # type: (Path, str, int, str) -> None
+    """Idempotently write the sentinel-managed war_room block (update in place if
+    present, else append). Line-based, no YAML dependency."""
+    cfg = Path(profile_root) / "config.yaml"
+    text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    block = "\n".join([
+        _WR_BEGIN,
+        "war_room:",
+        "  enabled: true",
+        "  board: %s" % (board or "default"),
+        "  role: contributor",
+        "  min_confidence: %d" % int(min_confidence),
+        "  gate_action: %s" % gate_action,
+        _WR_END,
+    ])
+    if _WR_BEGIN in text and _WR_END in text:
+        pre = text.split(_WR_BEGIN, 1)[0].rstrip("\n")
+        post = text.split(_WR_END, 1)[1]
+        new = (pre + "\n" + block + post)
+    else:
+        new = text.rstrip("\n") + "\n\n" + block + "\n"
+    cfg.write_text(new, encoding="utf-8")
+```
+
+Update the call site in `run_setup`:
+
+```python
+    if "warroom.enroll" in selected:
+        patch_war_room_block(profile_root, values.get("warroom.board", "").strip())
+```
+
+becomes:
+
+```python
+    if "warroom.enroll" in selected:
+        mc = _clamp_pct(values.get("warroom.min_confidence", ""))
+        patch_war_room_block(profile_root, values.get("warroom.board", "").strip(), min_confidence=mc)
+```
+
+- [ ] **Step 9: Run the new test + full suite**
+
+Run: `cd template && python3 -m pytest tests/test_confidence_gate.py -v && python3 -m pytest -q`
+Expected: 5 passed in the gate file; full suite green (Tasks 0-17).
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add template/skills/confidence-gate template/skill-bundles/warroom.yaml \
+        template/config.yaml template/persona/decisions.md \
+        template/warroom_setup/selectables.py template/warroom_setup/setup.py \
+        template/tests/test_confidence_gate.py
+git commit -m "AWR template: confidence-gate Layer 1 default (skill + managed config + wizard field)"
+```
+
+---
+
 ## Self-Review (completed by plan author)
 
 **Spec coverage:**
@@ -2655,6 +2899,8 @@ git commit -m "AWR template: security & structural hardening (0600 secrets, slug
 - Spec §A.3 invariants I1 (purity), import-graph acyclicity → Task 16 structural tests. ✅
 - Spec §I coverage matrix → `test_security.py` realizes the security/structural row; all other rows map to Tasks 0-11. ✅
 - Spec §B schema_version / migrate shim → NOT yet a task (deferred; current `load()` is already forward-compatible via `data.get` defaults). Flagged below.
+- Spec §K confidence-gate Layer 1 (skill, managed config knob, persona rule, wizard field) → Task 17. ✅ Task 17 also fixes the latent `patch_war_room_block` no-op (shipped config already has a `war_room:` block) via the sentinel-managed rewrite.
+- Layer 2 (structural `pre_gateway_dispatch` hook) → its own spec `2026-06-05-war-room-confidence-gate-design.md`; NOT in this plan (sibling sub-project, depends on L1).
 
 **Placeholder scan:** No "TBD"/"implement later". `<<FILL-IN>>` markers are intentional persona-content placeholders for the END USER, not plan gaps. Every code step has complete code.
 
