@@ -39,6 +39,27 @@ def _is_real_tty(stream):
         return False
 
 
+def prompt_secret(label, current=None):
+    # type: (str, object) -> str
+    """Read a secret with masked input via getpass. If current is provided, an
+    empty entry keeps it (the usual "press enter to keep existing" affordance).
+    Returns the entered secret (stripped), or current when left blank."""
+    import getpass
+    suffix = " [enter to keep current]" if current else ""
+    prompt = "%s%s: " % (label, suffix)
+    try:
+        val = getpass.getpass(prompt)
+    except Exception:
+        try:
+            val = input(prompt)
+        except EOFError:
+            val = ""
+    val = (val or "").strip()
+    if val == "" and current is not None:
+        return current
+    return val
+
+
 def collect(fields, selected_toggles, in_stream=None, out_stream=None):
     # type: (List[TextField], Set[str], object, object) -> Dict[str, str]
     in_stream = in_stream if in_stream is not None else sys.stdin
