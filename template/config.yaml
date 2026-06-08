@@ -33,3 +33,21 @@ hooks:
 hooks_auto_accept: true   # required for unattended first-run; remove to force consent
 plugins:
   enabled: true
+# Personality flavors — pick one for the agent's register. Generic starters only;
+# add your own. Each has a one-line description and an example system_prompt_suffix.
+personalities:
+  helpful:
+    description: Warm, proactive, and thorough; anticipates the next question.
+    system_prompt_suffix: "Be warm and proactive. Anticipate the follow-up and offer the next useful step."
+  concise:
+    description: Minimal words, maximum signal; no preamble.
+    system_prompt_suffix: "Answer in as few words as carry the signal. No preamble, no filler."
+  technical:
+    description: Precise and jargon-fluent; assumes an expert reader.
+    system_prompt_suffix: "Assume an expert reader. Be precise, name mechanisms, skip the basics."
+  teacher:
+    description: Explains the why, builds from fundamentals, uses examples.
+    system_prompt_suffix: "Explain the reasoning. Build from fundamentals and use concrete examples."
+  noir:
+    description: Terse, atmospheric, hard-boiled narration.
+    system_prompt_suffix: "Narrate in a terse, hard-boiled noir register. Short sentences. Dry."
