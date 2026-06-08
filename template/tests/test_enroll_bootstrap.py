@@ -96,16 +96,27 @@ def test_bootstrap_dry_run_writes_nothing(tmp_path):
     assert setup._MB_BEGIN not in (prof / "config.yaml").read_text()
 
 
-def test_bootstrap_writes_runtime_env_to_dotenv(tmp_path):
-    # Revised T3: routing is delivered to mailbox's hook via <profile>/.env, not
-    # a settings.json hook. Existing .env keys (e.g. tokens) are preserved.
+def test_bootstrap_writes_mailbox_board_to_dotenv(tmp_path):
+    # Production env-propagation: Hermes loads <profile>/.env into the env that
+    # reaches mailbox's hook; this is the only path surviving #3=NO.
     prof = _profile(tmp_path)
-    (prof / ".env").write_text("ANTHROPIC_API_KEY=sk-secret\n", encoding="utf-8")
+    enroll.bootstrap(prof, "shared", "alpha-sh", env=_env_with_cli(tmp_path))
+    assert "MAILBOX_BOARD=shared" in (prof / ".env").read_text()
+
+
+def test_bootstrap_writes_mailbox_label_to_dotenv(tmp_path):
+    prof = _profile(tmp_path)
+    enroll.bootstrap(prof, "shared", "alpha-sh", env=_env_with_cli(tmp_path))
+    assert "MAILBOX_LABEL=alpha-sh" in (prof / ".env").read_text()
+
+
+def test_bootstrap_dotenv_write_preserves_existing_keys(tmp_path):
+    prof = _profile(tmp_path)
+    (prof / ".env").write_text("ANTHROPIC_API_KEY=sk-xxx\n", encoding="utf-8")
     enroll.bootstrap(prof, "shared", "alpha-sh", env=_env_with_cli(tmp_path))
     env_txt = (prof / ".env").read_text()
+    assert "ANTHROPIC_API_KEY=sk-xxx" in env_txt   # merge, not clobber
     assert "MAILBOX_BOARD=shared" in env_txt
-    assert "MAILBOX_LABEL=alpha-sh" in env_txt
-    assert "ANTHROPIC_API_KEY=sk-secret" in env_txt  # not clobbered
 
 
 def test_bootstrap_does_not_touch_claude_settings(tmp_path):
