@@ -2,10 +2,6 @@
 
 __**We kept adding agents until the problem got scared.**__ A real-time war room for parallel agents w/ chat for coordination, terminal for speed, and one poor problem getting jumped by an organized digital mob.
 
-The **problem-solver 9000**: drop a problem into the war room and a swarm of
-agents dogpiles it -- working in parallel, coordinating so they never overlap,
-suffocating the issue until it's fixed.
-
 ## Layout
 
 ```
