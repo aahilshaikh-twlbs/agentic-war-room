@@ -10,4 +10,4 @@ dev = ["pytest>=7"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "plugins/warroom-gate"]
