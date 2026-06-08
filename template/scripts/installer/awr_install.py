@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Set
 import in_process_orchestrator as orch
 import masked_prompt
 import profile_detect
+import sidecar_state
 from _substrate import validators
 from _substrate.discord_walkthrough import (
     DiscordCreds,
@@ -589,14 +590,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         # T11 fills this in.
         print("awr_install %s: uninstall mode (skeleton)" % __version__)
         return 0
+
+    sidecar = sidecar_state.Sidecar()
     if args.resume:
-        # T7 wires the sidecar resume path.
-        print("awr_install %s: resume mode (skeleton)" % __version__)
-        return 0
+        state = sidecar.load()
+        if state is None:
+            print("No resumable install found (or it expired >24h); starting fresh.")
+        else:
+            print("Resuming %r (pending stages: %s)."
+                  % (state.get("profile_name"), sidecar_state.pending_stages(state)))
+            reprompt = sidecar_state.channels_needing_reprompt(state)
+            if reprompt:
+                print("Channel secrets are not stored; you'll re-enter: %s" % ", ".join(reprompt))
 
     # Interactive + headless both collect answers via run_tui; the execute phase
-    # consumes them in-process.
-    answers = run_tui(args)
+    # consumes them in-process. The sidecar captures a non-secret snapshot on abort.
+    answers = run_tui(args, sidecar=sidecar)
     if answers is None:
         return 1
 
@@ -616,6 +625,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         stage_timeout=args.stage_timeout,
         skip_install=skip_install,
     )
+    if result.exit_code == 0 and not args.dry_run:
+        sidecar.cleanup()
     return result.exit_code
 
 
