@@ -14,18 +14,16 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from . import answers as answers_mod
-from . import persona_sync, prompts, render, schema, selectables
+from . import persona_sync, prompts, render, schema, selectables, validators
 from .agent_model import AgentIdentity
 from .agent_model import load as load_identity
 from .agent_model import save as save_identity
 
 
-_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
-
-
-def _validate_slug(s):
-    # type: (str) -> bool
-    return bool(_SLUG_RE.match(s or ""))
+# Validators now live in validators.py (single source of truth). Kept as a
+# module-level alias for backward compatibility with callers/tests that import
+# setup._validate_slug.
+_validate_slug = validators.valid_slug
 
 
 def _slugify(s):
@@ -51,15 +49,9 @@ _WR_BEGIN = "# >>> warroom-managed (set via `warroom setup`) >>>"
 _WR_END = "# <<< warroom-managed <<<"
 
 
-def _clamp_pct(s, default=75):
-    # type: (str, int) -> int
-    s = (s or "").strip()
-    if not s:
-        return default
-    try:
-        return max(0, min(100, int(s)))
-    except ValueError:
-        return default
+# Percentage clamp now lives in schema.py (single source of truth). Kept as a
+# module-level alias for backward compatibility with callers/tests.
+_clamp_pct = schema.clamp_pct
 
 
 def seed_overlay(profile_root):
@@ -270,10 +262,10 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
         agent_name = values.get("agent_name", "").strip() or (prior_ident.agent_name if prior_ident else "warroom")
         handle = values.get("handle", "").strip() or agent_name
         display = values.get("display_name", "").strip() or agent_name
-        if not _validate_slug(agent_name):
+        if not validators.valid_slug(agent_name):
             out_stream.write("  agent_name %r invalid (need ^[a-z][a-z0-9-]*$); slugifying\n" % agent_name)
             agent_name = _slugify(agent_name)
-        if not _validate_slug(handle):
+        if not validators.valid_handle(handle):
             handle = agent_name
         model = "sonnet" if "model.sonnet" in selected and "model.opus" not in selected else "opus"
         fingerprint = prior_ident.agent_fingerprint if prior_ident else "%s-%s" % (agent_name, uuid.uuid4().hex[:12])
@@ -284,10 +276,10 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
     # .env: only env-mapped values.
     env_values = {k: v for k, v in values.items() if k in selectables.ENV_FIELD_IDS and v}
     if env_values:
-        write_env(profile_root, env_values)
+        write_env(profile_root, env_values, filename=".env")
 
     if "warroom.enroll" in selected:
-        mc = _clamp_pct(values.get("warroom.min_confidence", ""))
+        mc = schema.clamp_pct(values.get("warroom.min_confidence", ""))
         patch_war_room_block(profile_root, values.get("warroom.board", "").strip(),
                              min_confidence=mc, enforce=("warroom.enforce" in selected))
 
