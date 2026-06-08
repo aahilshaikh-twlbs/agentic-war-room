@@ -101,3 +101,19 @@ def test_env_template_keys_consistent_with_distribution():
     req = set(re.findall(r"- name:\s*(\S+)", dist))
     # every declared env_requires key must exist in .env.template
     assert req <= env_keys, "env_requires not covered by .env.template: %s" % (req - env_keys)
+
+
+# ---- T17: hooks/ + scripts/ READMEs ----
+
+def test_hooks_readme_documents_contracts():
+    text = (ROOT / "hooks" / "README.md").read_text(encoding="utf-8")
+    for contract in ("on_session_start", "pre_tool_use", "post_tool_use"):
+        assert contract in text
+    assert "twelvelabs" not in text.lower()
+
+
+def test_scripts_readme_documents_entrypoints():
+    text = (ROOT / "scripts" / "README.md").read_text(encoding="utf-8")
+    for script in ("setup.sh", "publish.sh", "install.sh", "assimilate.sh"):
+        assert script in text
+    assert "twelvelabs" not in text.lower()
