@@ -83,9 +83,14 @@ by the wizard — it writes the same value to both. The gate reads only
 `war_room.board`; cross-agent routing reads only `mailbox.board`.
 
 What `warroom setup` does for coordination: records `board` and `label` in the
-`mailbox:` block, then runs `warroom enroll`, which persists runtime state and
-installs the Claude Code `SessionStart` hook so the next session actually joins
-the board.
+`mailbox:` block (the canonical, human-readable source), then runs `warroom
+enroll`, which persists runtime state and writes `MAILBOX_BOARD` / `MAILBOX_LABEL`
+into `<profile>/.env`. Hermes loads `.env` into the environment that reaches
+mailbox's own `SessionStart` hook, so the next session joins the chosen board.
+No `~/.claude/settings.json` edit and no extra hook are installed — config.yaml
+is what you read/edit, `.env` is the runtime delivery channel, and the wizard
+keeps them in sync (re-sync a manual config.yaml edit with
+`warroom enroll --reconfigure`).
 
 ### Installing the mailbox runtime
 Cross-agent features need the `mailbox` CLI/daemon. If `warroom enroll` reports
@@ -110,17 +115,28 @@ connect — it never spawns a daemon.
 
 ### How profiles meet on a board
 Two profiles that set the same `mailbox.board` land on the same named board
-regardless of cwd. The template `SessionStart` hook re-exports `MAILBOX_BOARD` /
-`MAILBOX_LABEL` (and, only when non-default, `MAILBOX_HOME` / `MAILBOX_SOCKET`)
-so mailbox's own hook joins the chosen board:
+regardless of cwd. `warroom enroll` writes `MAILBOX_BOARD` / `MAILBOX_LABEL`
+(and, only when non-default, `MAILBOX_HOME` / `MAILBOX_SOCKET`) into
+`<profile>/.env`; Hermes carries those into mailbox's own SessionStart hook,
+which joins the chosen board:
 ```
 # Terminal 1
 hermes profile install ./template --name alpha-sh --alias --force -y
+bash scripts/setup.sh          # wire routing BEFORE first chat (see caveat below)
 hermes -p alpha-sh chat        # ask: "what's mailbox ps say?"
 # Terminal 2
 hermes profile install ./template --name beta-sh --alias --force -y
+bash scripts/setup.sh
 hermes -p beta-sh chat         # ask: "broadcast 'hello' to the board"
 ```
+
+> **First-session caveat:** Hermes loads `<profile>/.env` into `os.environ` at
+> gateway start. If you run `hermes chat` on a fresh install without first
+> running setup, `first_run.sh` writes `.env` *after* the env is already loaded,
+> so the FIRST session's mailbox hook falls back to the cwd-derived board.
+> Subsequent sessions work. **Canonical path: run `bash scripts/setup.sh` before
+> the first `hermes chat`.** The `first_run.sh` auto-setup is a safety net, not
+> the canonical path.
 
 ### Debugging cross-agent issues
 ```

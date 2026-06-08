@@ -120,16 +120,27 @@ to another SessionStart hook in the same event. The plan's primary T3 design
 ("template hook writes export lines that mailbox's hook reads via os.environ in
 the same SessionStart event") **does not work**.
 
-**Consequence (per plan §0 / T3 contingency):** T3 must use the **sidecar-JSON +
-wrapper** fallback. The template's `session_start.py` cannot seed env for a
-sibling hook; instead it must persist routing to a sidecar
-(`<profile>/local/runtime_env.json`) and the env must be injected into mailbox's
-hook by some mechanism other than a parallel sibling SessionStart hook.
+**Consequence — FINAL resolution (team-lead, revised T3): `.env` propagation.**
 
-**Additional wrinkle surfaced to team-lead:** the contingency text says "insert
-before mailbox in `~/.claude/settings.json`", but because hooks run in parallel
-(#2), "insert before" does not help. A working fallback requires the template
-hook to *invoke mailbox's hook itself* (subprocess, with env pre-populated) and
-mailbox's own SessionStart registration to be removed/neutralized to avoid a
-double `join`. This pivots T3's installer and touches mailbox's registration —
-flagged for decision before T3 is implemented.
+The sibling-hook env problem is sidestepped entirely. Mailbox's own
+`~/.claude/mailbox/hooks/session_start.py` reads `MAILBOX_BOARD` / `MAILBOX_LABEL`
+from `os.environ` at entry (L33-34). Hermes loads `<profile>/.env` into the
+gateway `os.environ`, and spawns the Claude Code subprocess (and thus mailbox's
+hook) with that full environment. So routing is delivered by writing
+`MAILBOX_BOARD` / `MAILBOX_LABEL` (and, only when non-default, `MAILBOX_HOME` /
+`MAILBOX_SOCKET`) into `<profile>/.env` via shared-core `write_env`.
+
+This means: **no template-side SessionStart hook, no `~/.claude/settings.json`
+edit, no touching mailbox's hook registration, no sidecar JSON.** The earlier
+"sidecar + wrapper-exec" contingency (and its parallel-execution wrinkle) is
+SUPERSEDED. `enroll.bootstrap` writes `.env`; `config.yaml`'s `mailbox:` block
+stays the canonical human-readable source; the wizard keeps them in sync.
+
+**First-session caveat:** Hermes loads `.env` at gateway start. On a fresh
+install where `first_run.sh` writes `.env` only after the env is already loaded,
+the FIRST session's mailbox hook falls back to the cwd-derived board; subsequent
+sessions work. Canonical path: run `bash scripts/setup.sh` before the first
+`hermes chat`. Documented in README. (Open: whether the gateway holds a
+long-running Claude Code process vs. spawns per session was not verified from
+source; if long-running, the caveat may extend beyond the first session — flagged
+to team-lead.)

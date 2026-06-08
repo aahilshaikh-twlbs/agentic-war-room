@@ -1,20 +1,22 @@
-"""T8 (renumbered from T8b) — end-to-end runtime proof: template hook → mailbox
-hook → real daemon join, two profiles meeting on a forced named board.
+"""T8 (revised) — end-to-end runtime proof: <profile>/.env → mailbox hook → real
+daemon join, two profiles meeting on a forced named board.
 
-This is the load-bearing proof of Feature C. It runs the REAL mailbox
-session_start hook against a REAL (tmp, isolated) daemon and shows that two
-profiles with DIFFERENT cwds still land on the same named board — provable only
-because the template hook forced MAILBOX_BOARD into the mailbox hook's env.
+Load-bearing proof of Feature C under the revised T3 (.env propagation, no
+template-side hook). enroll.bootstrap writes MAILBOX_BOARD/LABEL into
+<profile>/.env; Hermes would load that into the env that reaches mailbox's own
+SessionStart hook. We SIMULATE that load by reading <profile>/.env and running
+the REAL mailbox hook with those vars set, against a REAL (tmp-isolated) daemon.
+Two profiles with DIFFERENT cwds still meet on board "shared" — provable only
+because .env forced MAILBOX_BOARD.
 
 NOTE (surfaced): lane CLAIMS are scoped to the cwd-derived repo board, not the
 named board, so a cross-cwd claim-deny does NOT fire (covered in-process by T7
-with a shared cwd). T8 asserts the cross-cwd *meeting* + messaging hero path and
+with a shared cwd). T8 asserts the cross-cwd meeting + messaging hero path and
 single-session lane claim/release.
 
-Gated: @integration + --runintegration; skipped unless the coordination mailbox
-package is importable.
+Gated: @integration + --runintegration; skipped unless coordination mailbox is
+importable.
 """
-import json
 import os
 import shutil
 import signal
@@ -25,8 +27,6 @@ import time
 from pathlib import Path
 
 import pytest
-
-pytestmark = pytest.mark.integration
 
 REPO = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO / "template"
@@ -59,7 +59,6 @@ def mailbox_runtime():
     finally:
         pidfile = os.path.join(mh, "mailboxd.pid")
         sock = os.path.join(mh, "d.sock")
-        pid = None
         try:
             pid = int(Path(pidfile).read_text().strip())
         except (OSError, ValueError):
@@ -86,38 +85,34 @@ def mailbox_runtime():
 
 
 def _build_profile(root, handle):
-    from warroom_setup import setup
+    from warroom_setup import enroll
     prof = root / handle
-    (prof / "hooks").mkdir(parents=True)
+    prof.mkdir(parents=True)
     (prof / "config.yaml").write_text("model: {}\n", encoding="utf-8")
-    setup.patch_mailbox_block(prof, board="shared", label=handle)
-    shutil.copy2(TEMPLATE / "hooks" / "session_start.py", prof / "hooks" / "session_start.py")
+    # bootstrap writes the mailbox: block AND <profile>/.env routing.
+    enroll.bootstrap(prof, "shared", handle, env=dict(os.environ))
     return prof
 
 
-def _run_template_hook(prof, env_file, home):
-    env = dict(os.environ)
-    env["HOME"] = home
-    env["CLAUDE_ENV_FILE"] = str(env_file)
-    r = subprocess.run([sys.executable, str(prof / "hooks" / "session_start.py")],
-                       input="", capture_output=True, text=True, env=env)
-    assert r.returncode == 0, r.stderr
-    return Path(env_file).read_text(encoding="utf-8") if Path(env_file).exists() else ""
-
-
-def _exports_to_env(env_text):
+def _parse_env(prof):
     out = {}
-    for line in env_text.splitlines():
-        if line.startswith("export ") and "=" in line:
-            k, _, v = line[len("export "):].partition("=")
-            out[k] = v
+    p = prof / ".env"
+    if not p.exists():
+        return out
+    for line in p.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and "=" in s:
+            k, _, v = s.partition("=")
+            out[k.strip()] = v.strip()
     return out
 
 
-def _run_mailbox_hook(extra_env, session_id, cwd):
+def _run_mailbox_hook(profile, session_id, cwd):
+    """Simulate Hermes loading <profile>/.env, then run the real mailbox hook."""
     env = dict(os.environ)
-    env.update(extra_env)
+    env.update(_parse_env(profile))  # the vars Hermes would have loaded
     env["PYTHONPATH"] = str(REPO / "coordination" / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    import json
     payload = json.dumps({"session_id": session_id, "cwd": cwd})
     r = subprocess.run([sys.executable, str(MAILBOX_HOOK)],
                        input=payload, capture_output=True, text=True, env=env)
@@ -125,26 +120,20 @@ def _run_mailbox_hook(extra_env, session_id, cwd):
 
 
 def test_two_profiles_meet_via_real_hook_chain(tmp_path, mailbox_runtime):
-    home = str(tmp_path / "home")
-    os.makedirs(home, exist_ok=True)
-
-    # 1-3. Two profiles, different cwds, same board.
+    # 1-3. Two profiles, different cwds, same board; routing lands in .env.
     alpha = _build_profile(tmp_path, "alpha-sh")
     beta = _build_profile(tmp_path, "beta-sh")
     assert "board: shared" in (alpha / "config.yaml").read_text()
-    assert "board: shared" in (beta / "config.yaml").read_text()
-
-    # 4-5. Template hook -> env_file exports -> mailbox hook joins forced board.
-    a_env = _exports_to_env(_run_template_hook(alpha, tmp_path / "a.env", home))
+    a_env = _parse_env(alpha)
     assert a_env.get("MAILBOX_BOARD") == "shared"
     assert a_env.get("MAILBOX_LABEL") == "alpha-sh"
-    _run_mailbox_hook(a_env, "sess-a", "/tmp/alpha")
+    assert _parse_env(beta).get("MAILBOX_BOARD") == "shared"
 
-    b_env = _exports_to_env(_run_template_hook(beta, tmp_path / "b.env", home))
-    assert b_env.get("MAILBOX_BOARD") == "shared"
-    _run_mailbox_hook(b_env, "sess-b", "/tmp/beta")
+    # 4-5. .env -> mailbox hook joins the forced board (real daemon).
+    _run_mailbox_hook(alpha, "sess-a", "/tmp/alpha")
+    _run_mailbox_hook(beta, "sess-b", "/tmp/beta")
 
-    # 6. Real daemon: despite different cwds, they meet on board "shared".
+    # 6. Despite different cwds, they meet on board "shared".
     import mailbox.client as client
     resp = client.request("ps", {"session_id": "sess-a"})
     assert resp.get("ok") is True, resp
@@ -160,8 +149,8 @@ def test_two_profiles_meet_via_real_hook_chain(tmp_path, mailbox_runtime):
     inbox2 = client.request("poll_inbox", {"session_id": "sess-b"})
     assert all(m["body"] != "hello" for m in inbox2["data"])
 
-    # 10-13. Single-session lane claim/release (cross-cwd deny is engine-scoped to
-    # the repo board; proven in-process by T7).
+    # 10-13. single-session lane claim/release (cross-cwd deny is repo-scoped;
+    # proven in-process by T7).
     c = client.request("claim_lane", {"session_id": "sess-a", "lane": "auth"})
     assert c["data"]["decision"] == "allow", c
     r = client.request("release_lane", {"session_id": "sess-a", "lane": "auth"})
