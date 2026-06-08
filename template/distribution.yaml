@@ -1,0 +1,34 @@
+# distribution.yaml — MUST sit at the repository root (Hermes has no subdir-install support).
+# Parsed by hermes_cli/profile_distribution.py::DistributionManifest.from_dict (yaml.safe_load).
+name: war-room-agent
+version: 0.1.0
+description: "Personalizable Hermes war-room agent (Discord + Slack), dual-runtime persona, AWR coordination."
+hermes_requires: ">=0.12.0"
+author: ""
+license: "MIT"
+
+env_requires:
+  - name: ANTHROPIC_API_KEY
+    description: "Model API key (Anthropic). Required unless you configure a different provider in config.yaml."
+    required: true
+  - name: DISCORD_BOT_TOKEN
+    description: "Discord bot token (only if you enable the Discord channel)."
+    required: false
+  - name: DISCORD_ALLOWED_USERS
+    description: "Comma-separated Discord user IDs allowed to talk to the bot."
+    required: false
+  - name: SLACK_BOT_TOKEN
+    description: "Slack bot token xoxb-... (only if you enable the Slack channel)."
+    required: false
+  - name: SLACK_APP_TOKEN
+    description: "Slack app token xapp-... (Socket Mode)."
+    required: false
+
+# Listed so update behavior is explicit. NOTE: persona/ and local/ are intentionally NOT here.
+distribution_owned:
+  - SOUL.md
+  - config.yaml
+  - mcp.json
+  - skills
+  - cron
+  - distribution.yaml

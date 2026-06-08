@@ -1,0 +1,13 @@
+[project]
+name = "warroom-setup"
+version = "0.1.0"
+description = "Setup wizard + persona compiler for the war-room agent profile distribution"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "plugins/warroom-gate"]

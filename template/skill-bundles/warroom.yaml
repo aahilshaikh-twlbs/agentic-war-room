@@ -1,0 +1,7 @@
+name: warroom
+description: Agentic war-room coordination bundle.
+skills:
+  - warroom
+  - confidence-gate
+instruction: |
+  War-room protocol. Follow confidence-gate before posting any claim to the channel.

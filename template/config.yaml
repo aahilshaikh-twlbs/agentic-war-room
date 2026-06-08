@@ -1,0 +1,35 @@
+# Minimal war-room agent profile config. Tokens live in .env, NOT here.
+# slack.* / discord.* are runtime/channel config (research: aahil-sh config.yaml:399-421).
+slack:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  channel_prompts: {}
+discord:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  auto_thread: false
+  thread_require_mention: false
+  history_backfill: true
+  history_backfill_limit: 50
+  reactions: false
+  channel_prompts: {}
+  allow_any_attachment: false
+  max_attachment_bytes: 33554432
+  reply_to_mode: false
+# >>> warroom-managed (set via `warroom setup`) >>>
+war_room:
+  enabled: false
+  board: default
+  role: contributor
+  min_confidence: 75
+  gate_action: abstain
+  enforce: false
+  show_confidence_badge: true
+# <<< warroom-managed <<<
+hooks:
+  on_session_start: bash hooks/first_run.sh
+hooks_auto_accept: true   # required for unattended first-run; remove to force consent
+plugins:
+  enabled: true
