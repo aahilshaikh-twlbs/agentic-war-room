@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import runtime_state
+from . import daemon_probe, runtime_state
 
 
 def _env(env):
@@ -251,3 +251,16 @@ def bootstrap(profile_root, board, label, dry_run=False, env=None):
         _install_claude_code_hook(profile_root, env=env)
 
     return state
+
+
+def enroll_status(profile_root, env=None):
+    # type: (Path, Optional[dict]) -> dict
+    """Read local/warroom-enroll.json and ping the recorded socket. Raises
+    FileNotFoundError when the profile was never enrolled. Returns the state dict
+    augmented with `daemon_reachable`. The ping is a stdlib AF_UNIX connect
+    (daemon_probe) — NEVER imports mailbox.client, NEVER auto-spawns."""
+    profile_root = Path(profile_root)
+    data = runtime_state.load_state(profile_root / "local" / "warroom-enroll.json")
+    sock_path = data.get("socket_path") or str(resolve_socket_path(env))
+    data["daemon_reachable"] = daemon_probe.ping_socket(sock_path)
+    return data
