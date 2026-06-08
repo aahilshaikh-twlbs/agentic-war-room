@@ -77,17 +77,23 @@ def seed_overlay(profile_root):
             shutil.copy2(f, target)
 
 
-def write_env(profile_root, env_values):
-    # type: (Path, Dict[str, str]) -> None
-    """Write .env by overlaying provided values onto .env.EXAMPLE keys. Keys not in
-    the example are appended. Existing .env values are overwritten for provided keys,
-    preserved otherwise."""
+def write_env(profile_root, env_values, filename=".env"):
+    # type: (Path, Dict[str, str], str) -> None
+    """Write an env file by overlaying provided values onto the base file's keys.
+    Keys not in the base are appended. Existing values are overwritten for provided
+    keys, preserved otherwise.
+
+    filename selects the target relative to profile_root (default ".env"). Only the
+    canonical .env is seeded from .env.EXAMPLE; a custom filename (e.g.
+    "local/sentinel.env") starts from its own existing contents or empty, and its
+    parent dirs are created as needed."""
+    profile_root = Path(profile_root)
     example = profile_root / ".env.EXAMPLE"
-    env_path = profile_root / ".env"
+    env_path = profile_root / filename
     base_lines = []
     if env_path.exists():
         base_lines = env_path.read_text(encoding="utf-8").splitlines()
-    elif example.exists():
+    elif filename == ".env" and example.exists():
         base_lines = example.read_text(encoding="utf-8").splitlines()
     seen = set()  # type: Set[str]
     out = []
@@ -103,6 +109,7 @@ def write_env(profile_root, env_values):
     for key, val in env_values.items():
         if key not in seen:
             out.append("%s=%s" % (key, val))
+    env_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = str(env_path) + ".tmp"
     Path(tmp).write_text("\n".join(out) + "\n", encoding="utf-8")
     os.replace(tmp, str(env_path))
