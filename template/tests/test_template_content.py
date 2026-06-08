@@ -65,3 +65,17 @@ def test_slack_manifest_is_generic_with_placeholders():
     assert len(cmds) == 1
     assert cmds[0]["command"] == "/ping"
     assert "twelvelabs" not in raw.lower()
+
+
+# ---- T14: cron/jobs.json + schema README ----
+
+def test_cron_jobs_is_empty_list():
+    data = json.loads((ROOT / "cron" / "jobs.json").read_text(encoding="utf-8"))
+    assert data == {"jobs": []}
+
+
+def test_cron_readme_documents_schema():
+    readme = (ROOT / "cron" / "README.md").read_text(encoding="utf-8")
+    for field in ("id", "name", "prompt", "schedule", "enabled"):
+        assert field in readme
+    assert "twelvelabs" not in readme.lower()
