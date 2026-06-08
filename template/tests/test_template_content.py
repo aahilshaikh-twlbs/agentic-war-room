@@ -73,6 +73,28 @@ def test_cron_readme_documents_schema():
     for field in ("id", "name", "prompt", "schedule", "enabled"):
         assert field in readme
 
+# ---- T15: skills .bundled_manifest + .hub/taps.json ----
+
+def test_bundled_manifest_ships_empty():
+    # Runtime-managed name:hash integrity cache. Ship EMPTY: listing skills not
+    # physically present would suppress them (treated as user-deleted).
+    f = ROOT / "skills" / ".bundled_manifest"
+    assert f.is_file()
+    assert f.read_text(encoding="utf-8").strip() == ""
+
+
+def test_hub_taps_is_empty_registry():
+    data = json.loads((ROOT / "skills" / ".hub" / "taps.json").read_text(encoding="utf-8"))
+    assert data == {"taps": []}
+
+
+def test_hub_readme_points_to_official_hub_and_recommends_skills():
+    text = (ROOT / "skills" / ".hub" / "README.md").read_text(encoding="utf-8")
+    assert "DEFAULT_TAPS" in text or "built in" in text
+    for skill in ("writing-plans", "test-driven-development", "dogfood"):
+        assert skill in text
+
+
 # ---- T16: .env.template (no .env.example; Hermes renames .env.template) ----
 
 def test_env_template_has_commented_mailbox_override():
