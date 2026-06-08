@@ -78,11 +78,66 @@ mailbox:
   mailbox_home: ""         # blank -> mailbox runtime default location
   socket_path: ""          # blank -> mailbox runtime default location
 ```
-`MAILBOX_BOARD_OVERRIDE` in `.env` is an optional power-user override only — do not
-put routing config in a secrets manager.
+`war_room.board` (the confidence-gate scope) and `mailbox.board` are kept in sync
+by the wizard — it writes the same value to both. The gate reads only
+`war_room.board`; cross-agent routing reads only `mailbox.board`.
+
+What `warroom setup` does for coordination: records `board` and `label` in the
+`mailbox:` block, then runs `warroom enroll`, which persists runtime state and
+installs the Claude Code `SessionStart` hook so the next session actually joins
+the board.
+
+### Installing the mailbox runtime
+Cross-agent features need the `mailbox` CLI/daemon. If `warroom enroll` reports
+`cli-not-found`, install it:
+```
+python3 coordination/install.py        # from a checkout
+```
+Discovery precedence: `$MAILBOX_HOME/mailbox` → `~/.claude/mailbox/mailbox` →
+`<repo>/coordination/bin/mailbox` (checkout only) → `mailbox` on `$PATH`. Set
+`MAILBOX_HOME` to relocate the runtime; the expected installed layout is a
+symlink at `~/.claude/mailbox/mailbox`.
+
+### `warroom enroll`
+```
+warroom enroll --board shared --label alpha-sh   # (re)wire routing
+warroom enroll --status                          # print JSON + daemon reachability
+warroom enroll --reconfigure                      # force re-write past the no-op guard
+```
+Exit codes: `0` ok+reachable, `1` cli-not-found, `2` ok-but-daemon-unreachable
+(`--status` only), `3` never enrolled. `--status` pings the socket with a stdlib
+connect — it never spawns a daemon.
+
+### How profiles meet on a board
+Two profiles that set the same `mailbox.board` land on the same named board
+regardless of cwd. The template `SessionStart` hook re-exports `MAILBOX_BOARD` /
+`MAILBOX_LABEL` (and, only when non-default, `MAILBOX_HOME` / `MAILBOX_SOCKET`)
+so mailbox's own hook joins the chosen board:
+```
+# Terminal 1
+hermes profile install ./template --name alpha-sh --alias --force -y
+hermes -p alpha-sh chat        # ask: "what's mailbox ps say?"
+# Terminal 2
+hermes profile install ./template --name beta-sh --alias --force -y
+hermes -p beta-sh chat         # ask: "broadcast 'hello' to the board"
+```
+
+### Debugging cross-agent issues
+```
+cat <profile>/local/warroom-enroll.log     # per-bootstrap + session_start lines
+cat <profile>/local/warroom-enroll.json     # resolved board/label/cli/socket/status
+mailbox ps                                   # who the daemon thinks is present
+warroom enroll --status                      # state + daemon reachability
+```
 
 Lanes (named work-units for dogpile coordination) are managed from the shell:
 `mailbox claim-lane <lane>`, `mailbox release-lane <lane>`, `mailbox list-lanes`.
+
+### Configuration reference
+- `mailbox.board` — board to join (source of truth for routing).
+- `mailbox.label` — how you appear on the board (defaults to the Hermes handle).
+- `mailbox.mailbox_home` (optional) — blank = runtime default `~/.claude/mailbox`.
+- `mailbox.socket_path` (optional) — blank = `<mailbox_home>/mailboxd.sock`.
 
 ## MCP servers
 MCP servers are registered in `config.yaml` under a top-level `mcp_servers:` block —
@@ -132,10 +187,18 @@ Confidence-gate Layer 2 end-to-end (2026-06-08, separate `awr-gate-smoke` profil
   has saved answers to `local/.warroom-setup.json`. On a fresh install with no saved
   answers and no stdin, the headless path falls back to default identity ("warroom")
   rather than the installed profile name; tracked as a follow-up.
-- Cross-agent runtime (feature C) is not yet wired. The `mailbox:` routing block
-  and the lane CLI (`mailbox claim-lane` / `release-lane` / `list-lanes`) ship in
-  this PR, but the gateway enrollment that makes the agent actually join a board at
-  startup lands in a later PR — until then the routing config is inert.
+- Cross-agent runtime (feature C): without the `coordination/` mailbox runtime
+  installed, enrollment fail-warns (`cli-not-found`) and war-room features are
+  inert until you install it (see "Installing the mailbox runtime").
+- A custom `MAILBOX_SOCKET` (or `MAILBOX_HOME`) segregates daemons: profiles only
+  see each other if they share the same socket/home. Override deliberately.
+- Lane claims are enforced on the cwd-derived repo board, not the named board —
+  peers in different working directories see each other (`ps`/`send`/`inbox`) but
+  do NOT see each other's lane claims. Same-repo peers get full lane enforcement.
+- First-fire: Hermes does no `{{PROFILE_ROOT}}` substitution, so the shipped
+  hook command is relative; `warroom setup` rewrites it to an absolute path. If
+  your gateway doesn't run hooks from the profile cwd, run `warroom setup` once
+  manually to self-heal the path.
 
 ## Sanitization
 This is a public template — no employer/operator names, internal hostnames,
