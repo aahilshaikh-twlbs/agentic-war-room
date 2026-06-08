@@ -45,3 +45,10 @@ def test_readme_documents_memory_convention():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "Memory convention" in readme
     assert "§" in readme
+
+
+# ---- T12: channel_directory.json ----
+
+def test_channel_directory_is_empty_skeleton():
+    data = json.loads((ROOT / "channel_directory.json").read_text(encoding="utf-8"))
+    assert data == {"updated_at": None, "platforms": {}}
