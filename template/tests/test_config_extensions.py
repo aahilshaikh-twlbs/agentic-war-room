@@ -81,3 +81,27 @@ def test_platform_toolsets_has_cli_discord_slack():
         assert re.search(r"^  %s" % re.escape(platform), block, re.M), "missing %s" % platform
     assert "- hermes-discord" in block
     assert "- hermes-slack" in block
+
+
+# ---- T20: safe-default top-level keys ----
+
+def test_safe_default_top_level_keys_present():
+    keys = _top_level_keys(CFG)
+    for k in ("approvals", "cron_mode", "security", "redact_secrets"):
+        assert k in keys, "missing top-level key: %s" % k
+
+
+def test_safe_default_values():
+    assert re.search(r"^approvals:\s*$", CFG, re.M)
+    assert re.search(r"^  mode:\s*manual\s*$", CFG, re.M)
+    assert re.search(r"^cron_mode:\s*deny\s*$", CFG, re.M)
+    assert re.search(r"^security:\s*$", CFG, re.M)
+    assert re.search(r"^  tirith_enabled:\s*true\s*$", CFG, re.M)
+    assert re.search(r"^redact_secrets:\s*true\s*$", CFG, re.M)
+
+
+def test_each_safe_default_has_a_comment_above():
+    lines = CFG.splitlines()
+    for key in ("approvals:", "cron_mode:", "security:", "redact_secrets:"):
+        idx = next(i for i, l in enumerate(lines) if l.startswith(key))
+        assert lines[idx - 1].lstrip().startswith("#"), "no comment above %s" % key
