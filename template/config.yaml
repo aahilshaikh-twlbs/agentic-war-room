@@ -22,3 +22,6 @@ war_room:
   enabled: false       # `warroom setup` flips this on + sets board when you enroll
   board: default
   role: contributor
+hooks:
+  on_session_start: bash hooks/first_run.sh
+hooks_auto_accept: true   # required for unattended first-run; remove to force consent
