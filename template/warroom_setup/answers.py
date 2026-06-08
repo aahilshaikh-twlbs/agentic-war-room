@@ -54,3 +54,7 @@ def save(path, ans):
         json.dump(payload, fh, indent=2)
         fh.write("\n")
     os.replace(tmp, str(path))
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:
+        pass

@@ -4,7 +4,10 @@ run_setup(profile_root): seed the user-owned overlay (local/persona, local/agent
 collect identity/toggles/secrets, write .env, patch the war_room block in config.yaml,
 compile the persona via persona_sync, and persist non-secret answers.
 """
+import os
+import re
 import shutil
+import stat
 import sys
 import uuid
 from pathlib import Path
@@ -17,6 +20,33 @@ from .agent_model import load as load_identity
 from .agent_model import save as save_identity
 
 
+_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+
+def _validate_slug(s):
+    # type: (str) -> bool
+    return bool(_SLUG_RE.match(s or ""))
+
+
+def _slugify(s):
+    # type: (str) -> str
+    return re.sub(r"[^a-z0-9-]", "-", (s or "").lower()).strip("-") or "warroom"
+
+
+def _secure_file(path):
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+
+
+def _secure_dir(path):
+    try:
+        os.chmod(str(path), 0o700)
+    except OSError:
+        pass
+
+
 def seed_overlay(profile_root):
     # type: (Path) -> None
     """Copy shipped persona/ skeleton into the user-owned local/persona/ overlay
@@ -25,6 +55,7 @@ def seed_overlay(profile_root):
     src = profile_root / "persona"
     dst = profile_root / "local" / "persona"
     dst.mkdir(parents=True, exist_ok=True)
+    _secure_dir(profile_root / "local")
     for f in sorted(src.glob("*.md")):
         target = dst / f.name
         if not target.exists():
@@ -57,7 +88,10 @@ def write_env(profile_root, env_values):
     for key, val in env_values.items():
         if key not in seen:
             out.append("%s=%s" % (key, val))
-    env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    tmp = str(env_path) + ".tmp"
+    Path(tmp).write_text("\n".join(out) + "\n", encoding="utf-8")
+    os.replace(tmp, str(env_path))
+    _secure_file(env_path)
 
 
 def patch_war_room_block(profile_root, board):
@@ -129,6 +163,11 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
         agent_name = values.get("agent_name", "").strip() or (prior_ident.agent_name if prior_ident else "warroom")
         handle = values.get("handle", "").strip() or agent_name
         display = values.get("display_name", "").strip() or agent_name
+        if not _validate_slug(agent_name):
+            out_stream.write("  agent_name %r invalid (need ^[a-z][a-z0-9-]*$); slugifying\n" % agent_name)
+            agent_name = _slugify(agent_name)
+        if not _validate_slug(handle):
+            handle = agent_name
         model = "sonnet" if "model.sonnet" in selected and "model.opus" not in selected else "opus"
         fingerprint = prior_ident.agent_fingerprint if prior_ident else "%s-%s" % (agent_name, uuid.uuid4().hex[:12])
         ident = AgentIdentity(agent_name=agent_name, handle=handle, display_name=display,

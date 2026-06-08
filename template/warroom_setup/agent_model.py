@@ -46,3 +46,7 @@ def save(path, ident):
         json.dump(asdict(ident), fh, indent=2)
         fh.write("\n")
     os.replace(tmp, str(path))
+    try:
+        os.chmod(str(path), 0o600)   # identity may carry no secret, but keep local/ uniformly private
+    except OSError:
+        pass
