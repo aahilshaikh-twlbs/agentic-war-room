@@ -65,6 +65,33 @@ entries over time. This README is the single source of truth for the convention.
   intents, set `DISCORD_BOT_TOKEN` + `DISCORD_ALLOWED_USERS` in `.env`, invite the bot.
 - **Slack:** Socket Mode app; set `SLACK_BOT_TOKEN` (xoxb-) + `SLACK_APP_TOKEN` (xapp-).
 
+## Coordination (mailbox routing)
+The agent joins an AWR coordination board via the mailbox runtime. Routing config
+is **non-secret** and lives in a top-level `mailbox:` block in `config.yaml` — NOT
+in `.env` (env is tokens-only) and NOT in any `local/*.env` file:
+```yaml
+mailbox:
+  board: default          # board to join
+  label: <your-handle>    # how you appear on the board (defaults to your handle)
+  mailbox_home: ""         # blank -> mailbox runtime default location
+  socket_path: ""          # blank -> mailbox runtime default location
+```
+`MAILBOX_BOARD_OVERRIDE` in `.env` is an optional power-user override only — do not
+put routing config in a secrets manager.
+
+Lanes (named work-units for dogpile coordination) are managed from the shell:
+`mailbox claim-lane <lane>`, `mailbox release-lane <lane>`, `mailbox list-lanes`.
+
+## MCP servers
+MCP servers are registered in `config.yaml` under a top-level `mcp_servers:` block —
+there is **no separate `mcp.json`** in the profile root. Add servers as:
+```yaml
+mcp_servers:
+  <<NAME>>:
+    url: <<URL>>
+    # transport / headers as needed
+```
+
 ## Verified
 End-to-end smoke against Hermes Agent v0.15.1 (2026-06-08):
 - `hermes profile install <template> --name awr-smoke` populated the profile and
@@ -103,3 +130,18 @@ Confidence-gate Layer 2 end-to-end (2026-06-08, separate `awr-gate-smoke` profil
   has saved answers to `local/.warroom-setup.json`. On a fresh install with no saved
   answers and no stdin, the headless path falls back to default identity ("warroom")
   rather than the installed profile name; tracked as a follow-up.
+- Cross-agent runtime (feature C) is not yet wired. The `mailbox:` routing block
+  and the lane CLI (`mailbox claim-lane` / `release-lane` / `list-lanes`) ship in
+  this PR, but the gateway enrollment that makes the agent actually join a board at
+  startup lands in a later PR — until then the routing config is inert.
+
+## Sanitization
+This is a public template — no employer/operator names, internal hostnames,
+channel IDs, or secrets may land in it. Before shipping any change (especially
+content copied from a personal profile), read [SANITIZATION.md](SANITIZATION.md)
+and run the guard:
+```sh
+python3 scripts/sanitize_check.py template/ --name <employer> --name <you>
+```
+It fails on org artifacts that leak by shape (Slack/Discord IDs, internal
+hostnames, vault paths, agent fingerprints) plus any names you pass.

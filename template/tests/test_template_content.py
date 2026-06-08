@@ -106,3 +106,24 @@ def test_scripts_readme_documents_entrypoints():
     text = (ROOT / "scripts" / "README.md").read_text(encoding="utf-8")
     for script in ("setup.sh", "publish.sh", "install.sh", "assimilate.sh"):
         assert script in text
+
+
+# ---- T22: README updates (append-only; old sections preserved) ----
+
+def test_readme_documents_mailbox_and_mcp_and_sanitization():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "mailbox:" in readme                      # routing block
+    assert "mcp_servers:" in readme                  # MCP in config.yaml, not mcp.json
+    assert "no separate `mcp.json`" in readme
+    assert "## Sanitization" in readme
+    assert "SANITIZATION.md" in readme
+    # cross-agent (feature C) known limitation
+    assert "Cross-agent runtime" in readme
+
+
+def test_readme_preserves_existing_sections():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    # T22 must APPEND, not delete the prior sections.
+    assert "## Verified" in readme
+    assert "## Known limitations" in readme
+    assert "local/.warroom-setup.json" in readme     # original known-limitation bullet
