@@ -270,6 +270,12 @@ def patch_hooks_command(profile_root):
     return True
 
 
+_WARROOM_PERSONA_RULE = (
+    "- Before editing a file a board peer may also be touching, run "
+    "`mailbox claim-lane <lane>` to coordinate. Release with "
+    "`mailbox release-lane <lane>` when done."
+)
+
 _PERSONA_SENTINEL_ABBR = {"warroom": "WR"}
 
 
@@ -398,6 +404,9 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
         label = values.get("warroom.label", "").strip() or ident.handle
         from . import enroll
         st = enroll.bootstrap(profile_root, board, label)
+        # Teach the persona to use mailbox lane-claims ambiently (idempotent).
+        patch_persona_decisions(profile_root, _WARROOM_PERSONA_RULE,
+                                sentinel_id="warroom-runtime")
         if st.status != "ok":
             out_stream.write(
                 'war-room: mailbox CLI not found — see template/README.md '
