@@ -161,6 +161,42 @@ def patch_war_room_block(profile_root, board=None, **overrides):
     cfg.write_text(new, encoding="utf-8")
 
 
+# Matches the `- command: "bash <...>first_run.sh"` line under hooks.on_session_start.
+# Hermes runs hooks with shell=False + arbitrary cwd and does NO {{PROFILE_ROOT}}
+# substitution, so the command must carry an absolute path. This rewriter is run
+# at install time (by enroll.bootstrap) to convert the shipped relative command
+# into an absolute one. Idempotent.
+_HOOK_CMD_RE = re.compile(
+    r'^(?P<pre>\s*-\s*command:\s*")bash\s+\S*?first_run\.sh(?P<post>"\s*)$',
+    re.MULTILINE,
+)
+
+
+def patch_hooks_command(profile_root):
+    # type: (Path) -> bool
+    """Rewrite hooks.on_session_start[*].command to an absolute
+    `bash <profile_root>/hooks/first_run.sh`. Idempotent; atomic write. Returns
+    True iff config.yaml changed. No-op (returns False) if config.yaml is absent
+    or the command line isn't present."""
+    profile_root = Path(profile_root)
+    cfg = profile_root / "config.yaml"
+    if not cfg.exists():
+        return False
+    text = cfg.read_text(encoding="utf-8")
+    abs_cmd = "bash %s" % (profile_root / "hooks" / "first_run.sh")
+
+    def _sub(m):
+        return "%sbash %s%s" % (m.group("pre"), profile_root / "hooks" / "first_run.sh", m.group("post"))
+
+    new = _HOOK_CMD_RE.sub(_sub, text)
+    if new == text:
+        return False
+    tmp = str(cfg) + ".tmp"
+    Path(tmp).write_text(new, encoding="utf-8")
+    os.replace(tmp, str(cfg))
+    return True
+
+
 _PERSONA_SENTINEL_ABBR = {"warroom": "WR"}
 
 

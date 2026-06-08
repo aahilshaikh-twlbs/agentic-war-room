@@ -28,8 +28,15 @@ war_room:
   enforce: false
   show_confidence_badge: true
 # <<< warroom-managed <<<
+# Hermes gateway hooks. MUST be a list-of-mappings (each with a `command` key);
+# a scalar string is silently warn-skipped by Hermes (shell_hooks._parse_hooks_block),
+# which is why the legacy scalar form never fired. `warroom setup` /
+# enroll.bootstrap rewrites this command to an absolute path at install time
+# (Hermes does no {{PROFILE_ROOT}} substitution and may run hooks from an
+# arbitrary cwd); first_run.sh self-locates via BASH_SOURCE as a backstop.
 hooks:
-  on_session_start: bash hooks/first_run.sh
+  on_session_start:
+    - command: "bash hooks/first_run.sh"
 hooks_auto_accept: true   # required for unattended first-run; remove to force consent
 plugins:
   enabled: true
