@@ -12,6 +12,7 @@ directory on ``PYTHONPATH`` (the launcher does this).
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -512,29 +513,91 @@ def _run_stage(name: str, io: WizardIO, acc: "_Acc", *, args, git_runner=None) -
         _stage_confirm(io, acc)
 
 
-def build_headless_answers(args) -> InstallerAnswers:
-    """Map CLI flags directly to answers (no prompting). T9 adds secret
-    resolution via --*-env / --*-file; T5 ships the flag mapping."""
+class HeadlessError(Exception):
+    """A required headless flag or secret is missing/unreadable (F10)."""
+
+
+def _read_secret(args, env_attr: str, file_attr: str, env: Dict[str, str]) -> Optional[str]:
+    """Resolve a secret from --*-env VAR or --*-file PATH (F20). Never a literal.
+
+    Aborts (HeadlessError) when the named env var is unset/empty or the file is
+    missing -- a specified-but-unresolvable secret is a hard error (F10).
+    """
+    var = getattr(args, env_attr, None)
+    path = getattr(args, file_attr, None)
+    if var:
+        val = env.get(var)
+        if not val:
+            raise HeadlessError("required env var %s is not set" % var)
+        return val.strip()
+    if path:
+        p = Path(path)
+        if not p.is_file():
+            raise HeadlessError("token file not found: %s" % path)
+        return p.read_text(encoding="utf-8").strip()
+    return None
+
+
+def build_headless_answers(args, *, env: Optional[Dict[str, str]] = None) -> InstallerAnswers:
+    """Map CLI flags + resolved secrets to answers (no prompting, F20/F10).
+
+    Requires --name, --source, --board, --agent-name, --display-name. Secrets
+    come from --*-env / --*-file; channels are taken from --discord/--slack and
+    their walkthroughs are skipped entirely (tokens supplied via flags).
+    """
+    env = env if env is not None else os.environ
+
+    required = {
+        "name": "--name", "source": "--source", "board": "--board",
+        "agent_name": "--agent-name", "display_name": "--display-name",
+    }
+    missing = [flag for attr, flag in required.items() if not getattr(args, attr, None)]
+    if missing:
+        raise HeadlessError("headless mode requires: %s" % ", ".join(sorted(missing)))
+
     channels: Set[str] = set()
     if getattr(args, "discord", False):
         channels.add("discord")
     if getattr(args, "slack", False):
         channels.add("slack")
-    name = getattr(args, "name", None) or ""
+
+    anthropic_key = _read_secret(args, "anthropic_key_env", "anthropic_key_file", env)
+
+    discord_creds = None
+    if "discord" in channels:
+        token = _read_secret(args, "discord_token_env", "discord_token_file", env)
+        discord_creds = DiscordCreds(
+            bot_token=token or "",
+            channel_id=getattr(args, "discord_channel_id", None) or "",
+            second_channel_id=getattr(args, "discord_second_channel_id", None) or "",
+        )
+
+    slack_creds = None
+    if "slack" in channels:
+        app = _read_secret(args, "slack_app_token_env", "slack_app_token_file", env)
+        bot = _read_secret(args, "slack_bot_token_env", "slack_bot_token_file", env)
+        slack_creds = SlackCreds(
+            app_token=app or "",
+            bot_token=bot or "",
+            channel_id=getattr(args, "slack_channel_id", None) or "",
+            second_channel_id=getattr(args, "slack_second_channel_id", None) or "",
+        )
+
+    name = args.name
     return InstallerAnswers(
-        source=getattr(args, "source", None) or default_source(),
+        source=args.source,
         profile_name=name,
         channels=channels,
-        discord_creds=None,
-        slack_creds=None,
-        anthropic_key=None,
-        agent_name=getattr(args, "agent_name", None) or name,
-        display_name=getattr(args, "display_name", None) or getattr(args, "agent_name", None) or name,
-        handle=getattr(args, "handle", None) or name,
+        discord_creds=discord_creds,
+        slack_creds=slack_creds,
+        anthropic_key=anthropic_key,
+        agent_name=args.agent_name,
+        display_name=args.display_name,
+        handle=getattr(args, "handle", None) or args.agent_name,
         discord_allowed_users=list(getattr(args, "discord_allowed_users", None) or []),
         min_confidence=getattr(args, "min_confidence", 75),
         model=getattr(args, "model", "opus") or "opus",
-        board=getattr(args, "board", None) or "shared",
+        board=args.board,
         label=getattr(args, "label", None) or name,
     )
 
@@ -606,7 +669,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Interactive + headless both collect answers via run_tui; the execute phase
     # consumes them in-process. The sidecar captures a non-secret snapshot on abort.
-    answers = run_tui(args, sidecar=sidecar)
+    try:
+        answers = run_tui(args, sidecar=sidecar)
+    except HeadlessError as exc:
+        print("headless error: %s" % exc)
+        return 2
     if answers is None:
         return 1
 
