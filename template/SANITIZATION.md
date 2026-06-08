@@ -65,6 +65,16 @@ Ship only generic, functional category names (`software-development/`,
 `productivity/`, `research/`, `dogfood/`, ...). The `<<FILL-IN>>` persona and the
 empty `channel_directory.json` / `memories/*.md` skeletons are the safe defaults.
 
+## Cross-agent routing (`mailbox:` block)
+
+- `MAILBOX_BOARD` / `MAILBOX_LABEL` are **non-secret routing**, never tokens.
+  They never belong in `.env` or in any vault — the `mailbox:` block in
+  `config.yaml` is the single source of truth.
+- `mailbox.label` defaults to the Hermes handle. Use a generic handle for public
+  demos; a real-name handle reveals operator identity.
+- The SHIPPED `template/config.yaml` MUST have `label: ""` in the `mailbox:`
+  block. The wizard populates it in the installed `<profile>/config.yaml` only.
+
 ## Persona content to strip on auto-copy
 
 - `SOUL.md` sections matching `^## With ` (peer-by-name sections).

@@ -16,14 +16,20 @@ def _module_files():
 
 def test_no_network_imports_in_package():
     banned = {"socket", "urllib", "http", "requests", "ftplib", "telnetlib", "smtplib"}
+    # daemon_probe.py is the ONE sanctioned home for an AF_UNIX *local IPC*
+    # liveness ping (warroom enroll --status). It may import `socket` and nothing
+    # else network-related; every other module stays fully banned. (Feature C
+    # plan/invariant reconciliation — surfaced to team-lead.)
+    per_file_allow = {"daemon_probe.py": {"socket"}}
     for f in _module_files():
+        block = banned - per_file_allow.get(f.name, set())
         tree = ast.parse(f.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for n in node.names:
-                    assert n.name.split(".")[0] not in banned, f"{f.name} imports {n.name}"
+                    assert n.name.split(".")[0] not in block, f"{f.name} imports {n.name}"
             elif isinstance(node, ast.ImportFrom):
-                assert (node.module or "").split(".")[0] not in banned, f"{f.name} from {node.module}"
+                assert (node.module or "").split(".")[0] not in block, f"{f.name} from {node.module}"
 
 
 def test_state_module_is_pure_no_io():
