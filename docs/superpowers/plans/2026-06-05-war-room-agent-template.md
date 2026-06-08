@@ -533,7 +533,11 @@ def run(manifest_path, repo_root, ident, check=False):
                     fromfile=str(target) + " (on disk)", tofile=str(target) + " (generated)"))
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            # Atomic write (invariant I6): a crash must never leave a half-written
+            # SOUL.md / Claude head, which would break agent startup.
+            tmp = str(target) + ".tmp"
+            Path(tmp).write_text(content, encoding="utf-8")
+            os.replace(tmp, str(target))
             sys.stdout.write("wrote {0}\n".format(target))
     return 1 if (check and drift) else 0
 
@@ -2610,7 +2614,6 @@ In `run_setup`, immediately after `handle = ...` and `display = ...` are compute
         if not _validate_slug(agent_name):
             out_stream.write("  agent_name %r invalid (need ^[a-z][a-z0-9-]*$); slugifying\n" % agent_name)
             agent_name = _slugify(agent_name)
-            ident_prefix = agent_name
         if not _validate_slug(handle):
             handle = agent_name
 ```
@@ -2900,7 +2903,7 @@ git commit -m "AWR template: confidence-gate Layer 1 default (skill + managed co
 - Spec §I coverage matrix → `test_security.py` realizes the security/structural row; all other rows map to Tasks 0-11. ✅
 - Spec §B schema_version / migrate shim → NOT yet a task (deferred; current `load()` is already forward-compatible via `data.get` defaults). Flagged below.
 - Spec §K confidence-gate Layer 1 (skill, managed config knob, persona rule, wizard field) → Task 17. ✅ Task 17 also fixes the latent `patch_war_room_block` no-op (shipped config already has a `war_room:` block) via the sentinel-managed rewrite.
-- Layer 2 (structural `pre_gateway_dispatch` hook) → its own spec `2026-06-05-war-room-confidence-gate-design.md`; NOT in this plan (sibling sub-project, depends on L1).
+- Layer 2 (structural `transform_llm_output` plugin hook) → its own spec `2026-06-05-war-room-confidence-gate-design.md`; NOT in this plan (sibling sub-project, depends on L1).
 
 **Placeholder scan:** No "TBD"/"implement later". `<<FILL-IN>>` markers are intentional persona-content placeholders for the END USER, not plan gaps. Every code step has complete code.
 

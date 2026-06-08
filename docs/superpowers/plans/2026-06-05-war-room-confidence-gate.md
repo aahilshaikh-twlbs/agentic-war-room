@@ -300,6 +300,12 @@ def test_substantive_assertion_is_a_claim():
     assert C.is_claim("The outage is caused by a 30s timeout in api/pay.py:88.") is True
 
 
+def test_terse_declarative_is_a_claim():
+    # Short, no period, but still an assertion — must be gated, not exempted.
+    for t in ["it's down", "payments are failing", "db is corrupted"]:
+        assert C.is_claim(t) is True, t
+
+
 def test_empty_is_not_a_claim():
     assert C.is_claim("   ") is False
 ```
@@ -336,16 +342,16 @@ def is_claim(text):
     # Pure question (asking, not asserting): single line, no declarative sentence.
     if t.endswith("?") and "\n" not in t and len(t) < 200 and "." not in t.rstrip("?"):
         return False
-    # Very short non-declarative fragment.
-    if len(t) < 25 and "." not in t:
-        return False
+    # NOTE: no length-based exemption. Terse declaratives ("it's down",
+    # "payments are failing", "db is corrupted") are claims and MUST be gated.
+    # See spec — any length short-circuit is a bug, not a convenience.
     return True
 ```
 
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `cd template && python3 -m pytest tests/test_classify.py -v`
-Expected: 4 passed.
+Expected: 5 passed.
 
 - [ ] **Step 5: Commit**
 

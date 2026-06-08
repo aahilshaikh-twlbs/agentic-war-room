@@ -603,7 +603,7 @@ This sub-project (idea #1) ships only **Layer 1 — the protocol default**. The
 structural enforcement hook is **Layer 2**, a sibling sub-project specified in
 `2026-06-05-war-room-confidence-gate-design.md`. Layer 1 is behavioral
 (persona + skill instruction); Layer 2 makes it airtight (a Hermes
-`pre_gateway_dispatch` hook that fails closed). The template is forward-shaped so
+`transform_llm_output` plugin hook that fails closed). The template is forward-shaped so
 turning Layer 2 on requires no change to Layer 1.
 
 ### What Layer 1 adds to the template
@@ -646,5 +646,5 @@ contains one. The managed-marker rewrite makes this robust and idempotent across
 - #4: multi-agent / multi-team topology built on this template.
 - #5: severity/DEFCON model feeding the `war_room{}` block.
 - #2/#3: skill pre-brief packs + propagation via Hermes `bundles`/`skills tap`.
-- **Confidence gate Layer 2** (structural enforcement): the `pre_gateway_dispatch`
-  hook — own spec `2026-06-05-war-room-confidence-gate-design.md`. Depends on L1.
+- **Confidence gate Layer 2** (structural enforcement): the `transform_llm_output`
+  plugin hook — own spec `2026-06-05-war-room-confidence-gate-design.md`. Depends on L1.
