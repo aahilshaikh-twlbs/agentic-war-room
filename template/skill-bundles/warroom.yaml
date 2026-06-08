@@ -1,0 +1,6 @@
+name: warroom
+description: Agentic war-room coordination bundle (no-op scaffold).
+skills:
+  - warroom
+instruction: |
+  No-op placeholder. Replace with real coordination guidance when L1 lands.

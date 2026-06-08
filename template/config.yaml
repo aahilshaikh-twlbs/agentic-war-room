@@ -1,0 +1,24 @@
+# Minimal war-room agent profile config. Tokens live in .env, NOT here.
+# slack.* / discord.* are runtime/channel config (research: aahil-sh config.yaml:399-421).
+slack:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  channel_prompts: {}
+discord:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  auto_thread: false
+  thread_require_mention: false
+  history_backfill: true
+  history_backfill_limit: 50
+  reactions: false
+  channel_prompts: {}
+  allow_any_attachment: false
+  max_attachment_bytes: 33554432
+  reply_to_mode: false
+war_room:
+  enabled: false       # `warroom setup` flips this on + sets board when you enroll
+  board: default
+  role: contributor
