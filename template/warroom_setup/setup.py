@@ -389,8 +389,20 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
 
     if "warroom.enroll" in selected:
         mc = schema.clamp_pct(values.get("warroom.min_confidence", ""))
-        patch_war_room_block(profile_root, values.get("warroom.board", "").strip(),
+        board = values.get("warroom.board", "").strip()
+        patch_war_room_block(profile_root, board,
                              min_confidence=mc, enforce=("warroom.enforce" in selected))
+        # Cross-agent runtime: bootstrap writes the mailbox: block (same board,
+        # keeping war_room.board / mailbox.board in sync per decision #13),
+        # persists runtime state, and installs the Claude Code SessionStart hook.
+        label = values.get("warroom.label", "").strip() or ident.handle
+        from . import enroll
+        st = enroll.bootstrap(profile_root, board, label)
+        if st.status != "ok":
+            out_stream.write(
+                'war-room: mailbox CLI not found — see template/README.md '
+                '"Installing the mailbox runtime" to activate cross-agent features.\n'
+            )
 
     # Persist non-secret answers (deselected = default-on ids that ended up off).
     all_default = selectables.default_ids(selectables.TOGGLES)
