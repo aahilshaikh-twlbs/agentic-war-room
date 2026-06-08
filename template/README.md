@@ -51,3 +51,25 @@ entire `local/` overlay (your filled persona + identity). After an update, run
 - **Discord:** create an app, enable **Message Content** + **Server Members**
   intents, set `DISCORD_BOT_TOKEN` + `DISCORD_ALLOWED_USERS` in `.env`, invite the bot.
 - **Slack:** Socket Mode app; set `SLACK_BOT_TOKEN` (xoxb-) + `SLACK_APP_TOKEN` (xapp-).
+
+## Verified
+End-to-end smoke against Hermes Agent v0.15.1 (2026-06-08):
+- `hermes profile install <template> --name awr-smoke` populated the profile and
+  renamed `.env.template` → `.env.EXAMPLE`.
+- `scripts/setup.sh` (interactive) seeded `local/persona/`, wrote `local/agent.json`
+  (handle `awr-smoke`), compiled `SOUL.md` (no unsubstituted `{{...}}`) and
+  `~/.claude/agents/awr-smoke.md`, wrote `.env` at mode `0600`, and patched the
+  sentinel-managed `war_room` block (`min_confidence: 75`).
+- `hermes profile update awr-smoke` preserved the `local/` overlay (the user's
+  persona edit + identity) while refreshing the shipped `persona/` skeleton.
+- `hermes profile delete awr-smoke` torn down cleanly.
+
+> Note: `template/.venv/` is a dev-only artifact (gitignored). Install from a clean
+> checkout, or publish via `scripts/publish.sh` — a published distribution contains
+> no `.venv`. Hermes rejects distributions containing symlinks.
+
+## Known limitations
+- `scripts/setup.sh --yes` is intended for re-runs after an initial interactive setup
+  has saved answers to `local/.warroom-setup.json`. On a fresh install with no saved
+  answers and no stdin, the headless path falls back to default identity ("warroom")
+  rather than the installed profile name; tracked as a follow-up.
