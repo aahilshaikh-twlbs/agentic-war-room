@@ -96,32 +96,24 @@ def test_bootstrap_dry_run_writes_nothing(tmp_path):
     assert setup._MB_BEGIN not in (prof / "config.yaml").read_text()
 
 
-def _settings_path(env):
-    return Path(env["HOME"]) / ".claude" / "settings.json"
-
-
-def test_bootstrap_installs_claude_code_hook_at_index_zero(tmp_path):
+def test_bootstrap_writes_runtime_env_to_dotenv(tmp_path):
+    # Revised T3: routing is delivered to mailbox's hook via <profile>/.env, not
+    # a settings.json hook. Existing .env keys (e.g. tokens) are preserved.
     prof = _profile(tmp_path)
-    env = _env_with_cli(tmp_path)
-    sp = _settings_path(env)
-    sp.write_text(json.dumps({"hooks": {"SessionStart": [
-        {"hooks": [{"type": "command", "command": "python3 ~/.claude/mailbox/hooks/session_start.py"}]}
-    ]}}))
-    enroll.bootstrap(prof, "shared", "alpha-sh", env=env)
-    ss = json.loads(sp.read_text())["hooks"]["SessionStart"]
-    assert len(ss) == 2
-    assert str(prof / "hooks" / "session_start.py") in ss[0]["hooks"][0]["command"]
-    assert "mailbox/hooks/session_start.py" in ss[1]["hooks"][0]["command"]
+    (prof / ".env").write_text("ANTHROPIC_API_KEY=sk-secret\n", encoding="utf-8")
+    enroll.bootstrap(prof, "shared", "alpha-sh", env=_env_with_cli(tmp_path))
+    env_txt = (prof / ".env").read_text()
+    assert "MAILBOX_BOARD=shared" in env_txt
+    assert "MAILBOX_LABEL=alpha-sh" in env_txt
+    assert "ANTHROPIC_API_KEY=sk-secret" in env_txt  # not clobbered
 
 
-def test_bootstrap_claude_code_hook_install_is_idempotent(tmp_path):
+def test_bootstrap_does_not_touch_claude_settings(tmp_path):
+    # The revised approach must NOT create or edit any settings.json.
     prof = _profile(tmp_path)
     env = _env_with_cli(tmp_path)
     enroll.bootstrap(prof, "shared", "alpha-sh", env=env)
-    enroll.bootstrap(prof, "shared", "alpha-sh", env=env)
-    ss = json.loads(_settings_path(env).read_text())["hooks"]["SessionStart"]
-    ours = [e for e in ss if str(prof / "hooks" / "session_start.py") in e["hooks"][0]["command"]]
-    assert len(ours) == 1
+    assert not (Path(env["HOME"]) / ".claude" / "settings.json").exists()
 
 
 def test_bootstrap_appends_log_line_per_invocation(tmp_path):

@@ -9,10 +9,8 @@ Stdlib only, Python >=3.9. This module owns:
 The mailbox package itself is treated as READ-ONLY; enroll never imports
 `mailbox.client` (see enroll_status, T5). Status pings use raw stdlib sockets.
 """
-import json
 import os
 import shutil
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -125,65 +123,41 @@ class EnrollState:
         }
 
 
-def _claude_settings_path(env=None):
-    # type: (Optional[dict]) -> Path
-    env = _env(env)
-    base = (env.get("CLAUDE_CONFIG_DIR") or "").strip()
-    root = Path(base) if base else (_home(env) / ".claude")
-    return root / "settings.json"
+def _runtime_env_values(state, env=None):
+    # type: (EnrollState, Optional[dict]) -> dict
+    """The MAILBOX_* vars to deliver via <profile>/.env. Always BOARD + LABEL;
+    HOME/SOCKET only when non-default (F15) so default profiles share a daemon."""
+    values = {
+        "MAILBOX_BOARD": state.board or "",
+        "MAILBOX_LABEL": state.label or "",
+    }
+    # Compute the runtime defaults from the same env the hook will see.
+    e = _env(env)
+    dflt_home = str((_home(e) / ".claude" / "mailbox"))
+    if state.mailbox_home and state.mailbox_home != dflt_home:
+        values["MAILBOX_HOME"] = state.mailbox_home
+    effective_home = state.mailbox_home or dflt_home
+    dflt_sock = str(Path(effective_home) / "mailboxd.sock")
+    if state.socket_path and state.socket_path != dflt_sock:
+        values["MAILBOX_SOCKET"] = state.socket_path
+    return values
 
 
-def _atomic_json_write(path, data):
-    # type: (Path, dict) -> None
-    path = Path(path)
-    fd = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=str(path.parent),
-        prefix=path.name + ".", suffix=".tmp", delete=False,
-    )
-    tmp_name = fd.name
-    try:
-        with fd:
-            json.dump(data, fd, indent=2)
-            fd.flush()
-            os.fsync(fd.fileno())
-        os.replace(tmp_name, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+def write_runtime_env(profile_root, state, env=None):
+    # type: (Path, EnrollState, Optional[dict]) -> None
+    """Deliver cross-agent routing to mailbox's hook via <profile>/.env.
 
-
-def _install_claude_code_hook(profile_root, env=None):
-    # type: (Path, Optional[dict]) -> None
-    """Register `<profile>/hooks/session_start.py` as a Claude Code SessionStart
-    hook at index 0 of `hooks.SessionStart` in settings.json. Idempotent: keyed
-    on the absolute script path appearing in any existing command. Creates the
-    settings file if absent. The settings path honors CLAUDE_CONFIG_DIR (env) so
-    tests never touch the operator's real ~/.claude/settings.json."""
-    profile_root = Path(profile_root)
-    settings = _claude_settings_path(env)
-    hook_script = str(profile_root / "hooks" / "session_start.py")
-    command = '[ -f "%s" ] && python3 "%s" || true' % (hook_script, hook_script)
-
-    if settings.exists():
-        data = json.loads(settings.read_text(encoding="utf-8") or "{}")
-    else:
-        settings.parent.mkdir(parents=True, exist_ok=True)
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    hooks = data.setdefault("hooks", {})
-    session_start = hooks.setdefault("SessionStart", [])
-
-    for entry in session_start:
-        for h in (entry.get("hooks", []) if isinstance(entry, dict) else []):
-            if hook_script in (h.get("command") or ""):
-                return  # already registered — idempotent no-op
-
-    session_start.insert(0, {"hooks": [{"type": "command", "command": command}]})
-    _atomic_json_write(settings, data)
+    Revised T3 (per lead): Hermes loads <profile>/.env into the gateway
+    os.environ, which propagates to the Claude Code subprocess and thus to
+    mailbox's own SessionStart hook (which reads MAILBOX_BOARD / MAILBOX_LABEL
+    from os.environ). No template-side hook, no settings.json edit, no touching
+    mailbox's registration. config.yaml's mailbox: block stays the canonical
+    human-readable source; .env is the runtime delivery channel. Uses shared-core
+    write_env, whose merge semantics preserve existing keys (e.g. tokens)."""
+    # Lazy `from . import setup` avoids an import cycle and the no-cross-import
+    # lint (which forbids the dotted-import form here).
+    from . import setup as _setup
+    _setup.write_env(profile_root, _runtime_env_values(state, env), filename=".env")
 
 
 def _append_log(log_path, state):
@@ -200,10 +174,15 @@ def _append_log(log_path, state):
 def bootstrap(profile_root, board, label, dry_run=False, env=None):
     # type: (Path, str, str, bool, Optional[dict]) -> EnrollState
     """Idempotent first-run wiring. Discovers the mailbox CLI, writes the
-    `mailbox:` config block, persists runtime state + a log line, and (when the
-    CLI is present) installs the Claude Code SessionStart hook. Fail-warn: a
-    missing CLI yields status="cli-not-found" without raising. dry_run performs
-    NO writes and returns status="dry-run".
+    `mailbox:` config block, delivers MAILBOX_BOARD/LABEL to <profile>/.env (the
+    runtime channel mailbox's own SessionStart hook reads), and persists runtime
+    state + a log line. Fail-warn: a missing CLI yields status="cli-not-found"
+    without raising (routing is still written so it activates once the CLI lands).
+    dry_run performs NO writes and returns status="dry-run".
+
+    Revised T3 (per lead): no template-side SessionStart hook and no
+    ~/.claude/settings.json edit — Hermes loads <profile>/.env into the
+    environment that reaches mailbox's hook.
     """
     env = _env(env)
     profile_root = Path(profile_root)
@@ -242,13 +221,13 @@ def bootstrap(profile_root, board, label, dry_run=False, env=None):
         mailbox_home=state.mailbox_home, socket_path=state.socket_path,
     )
 
+    # Deliver routing to mailbox's hook via <profile>/.env (runtime channel).
+    write_runtime_env(profile_root, state, env=env)
+
     local = profile_root / "local"
     local.mkdir(parents=True, exist_ok=True)
     runtime_state.save_state(local / "warroom-enroll.json", state.to_dict())
     _append_log(local / "warroom-enroll.log", state)
-
-    if cli is not None:
-        _install_claude_code_hook(profile_root, env=env)
 
     return state
 
