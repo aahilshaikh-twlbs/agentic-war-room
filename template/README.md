@@ -47,6 +47,19 @@ hermes -p war-room-agent gateway status
 entire `local/` overlay (your filled persona + identity). After an update, run
 `bash scripts/setup.sh --sync` to recompile from your overlay.
 
+## Memory convention
+The agent's durable memory lives in two Markdown files under `memories/` (this
+directory is user-owned and survives `hermes profile update`):
+- `memories/USER.md` — durable **facts about the operator**: preferences,
+  workflow, hard constraints.
+- `memories/MEMORY.md` — **session-flavored knowledge** learned over time that is
+  worth carrying forward (not operator facts).
+
+Both files use the same on-disk shape: a flat list of entries, where each entry
+is separated from the next by a line containing only the section sign `§`. An
+entry is free-form Markdown. Ship them empty (header only); the agent appends
+entries over time. This README is the single source of truth for the convention.
+
 ## Provisioning the channels
 - **Discord:** create an app, enable **Message Content** + **Server Members**
   intents, set `DISCORD_BOT_TOKEN` + `DISCORD_ALLOWED_USERS` in `.env`, invite the bot.

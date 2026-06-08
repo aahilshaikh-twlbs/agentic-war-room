@@ -27,3 +27,21 @@ def test_soul_skeleton_is_all_fill_in_no_real_content():
     text = (ROOT / "SOUL.md").read_text(encoding="utf-8")
     assert "<<FILL-IN" in text
     assert "twelvelabs" not in text.lower()
+
+
+# ---- T11: memory files + convention ----
+
+def test_memory_files_exist_with_separator_header():
+    for name in ("USER.md", "MEMORY.md"):
+        f = ROOT / "memories" / name
+        assert f.is_file()
+        head = f.read_text(encoding="utf-8")
+        assert "§" in head            # documents the § separator
+        assert head.count("\n") <= 4       # header-only, no real content
+        assert "twelvelabs" not in head.lower()
+
+
+def test_readme_documents_memory_convention():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Memory convention" in readme
+    assert "§" in readme
