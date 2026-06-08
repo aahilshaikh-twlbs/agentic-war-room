@@ -64,6 +64,23 @@ End-to-end smoke against Hermes Agent v0.15.1 (2026-06-08):
   persona edit + identity) while refreshing the shipped `persona/` skeleton.
 - `hermes profile delete awr-smoke` torn down cleanly.
 
+Confidence-gate Layer 2 end-to-end (2026-06-08, separate `awr-gate-smoke` profile):
+- Plugin shipped at `<profile>/plugins/warroom-gate/` with all 7 `wg_*.py` modules
+  and `plugin.yaml`.
+- `hermes plugins list` discovered `warroom-gate 0.1.0` from `user` source;
+  `hermes plugins enable warroom-gate` flipped it to `enabled`.
+- Sentinel-managed `war_room` block carried `enabled: true`, `min_confidence: 75`,
+  `enforce: true`, `show_confidence_badge: true` (T8 extension verified).
+- Direct invocation of the `register()` callback with a fake `register_hook` ctx
+  registered `transform_llm_output`; the callback then exercised all four
+  decision branches against synthetic responses:
+  - low-conf ungrounded claim → abstention with missing items listed
+  - high-conf grounded claim → pass-through with confidence badge appended
+  - claim text with NO envelope → fail-closed abstention (the critical case)
+  - chatter combo → conservative classifier abstained (documented behavior)
+- Audit log at `local/war_room/gate.log` was created at mode `0600`; recorded all
+  four decisions with action / reason / conf / kind / sha — no secrets.
+
 > Note: `template/.venv/` is a dev-only artifact (gitignored). Install from a clean
 > checkout, or publish via `scripts/publish.sh` — a published distribution contains
 > no `.venv`. Hermes rejects distributions containing symlinks.
