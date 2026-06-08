@@ -18,10 +18,14 @@ discord:
   allow_any_attachment: false
   max_attachment_bytes: 33554432
   reply_to_mode: false
+# >>> warroom-managed (set via `warroom setup`) >>>
 war_room:
-  enabled: false       # `warroom setup` flips this on + sets board when you enroll
+  enabled: false
   board: default
   role: contributor
+  min_confidence: 75
+  gate_action: abstain
+# <<< warroom-managed <<<
 hooks:
   on_session_start: bash hooks/first_run.sh
 hooks_auto_accept: true   # required for unattended first-run; remove to force consent

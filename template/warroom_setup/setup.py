@@ -47,6 +47,21 @@ def _secure_dir(path):
         pass
 
 
+_WR_BEGIN = "# >>> warroom-managed (set via `warroom setup`) >>>"
+_WR_END = "# <<< warroom-managed <<<"
+
+
+def _clamp_pct(s, default=75):
+    # type: (str, int) -> int
+    s = (s or "").strip()
+    if not s:
+        return default
+    try:
+        return max(0, min(100, int(s)))
+    except ValueError:
+        return default
+
+
 def seed_overlay(profile_root):
     # type: (Path) -> None
     """Copy shipped persona/ skeleton into the user-owned local/persona/ overlay
@@ -94,16 +109,29 @@ def write_env(profile_root, env_values):
     _secure_file(env_path)
 
 
-def patch_war_room_block(profile_root, board):
-    # type: (Path, str) -> None
-    """Append/replace a top-level `war_room:` block in config.yaml. Minimal line-based
-    edit (no YAML dep): if a war_room: block exists, leave it; else append one."""
-    cfg = profile_root / "config.yaml"
+def patch_war_room_block(profile_root, board, min_confidence=75, gate_action="abstain"):
+    # type: (Path, str, int, str) -> None
+    """Idempotently write the sentinel-managed war_room block (update in place if
+    present, else append). Line-based, no YAML dependency."""
+    cfg = Path(profile_root) / "config.yaml"
     text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
-    if "\nwar_room:" in ("\n" + text):
-        return
-    block = "\nwar_room:\n  enabled: true\n  board: %s\n  role: contributor\n" % (board or "default")
-    cfg.write_text(text.rstrip("\n") + "\n" + block, encoding="utf-8")
+    block = "\n".join([
+        _WR_BEGIN,
+        "war_room:",
+        "  enabled: true",
+        "  board: %s" % (board or "default"),
+        "  role: contributor",
+        "  min_confidence: %d" % int(min_confidence),
+        "  gate_action: %s" % gate_action,
+        _WR_END,
+    ])
+    if _WR_BEGIN in text and _WR_END in text:
+        pre = text.split(_WR_BEGIN, 1)[0].rstrip("\n")
+        post = text.split(_WR_END, 1)[1]
+        new = (pre + "\n" + block + post)
+    else:
+        new = text.rstrip("\n") + "\n\n" + block + "\n"
+    cfg.write_text(new, encoding="utf-8")
 
 
 def _resolve_toggles(profile_root, yes, reconfigure, toggle_in_stream, out_stream):
@@ -180,7 +208,8 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
         write_env(profile_root, env_values)
 
     if "warroom.enroll" in selected:
-        patch_war_room_block(profile_root, values.get("warroom.board", "").strip())
+        mc = _clamp_pct(values.get("warroom.min_confidence", ""))
+        patch_war_room_block(profile_root, values.get("warroom.board", "").strip(), min_confidence=mc)
 
     # Persist non-secret answers (deselected = default-on ids that ended up off).
     all_default = selectables.default_ids(selectables.TOGGLES)

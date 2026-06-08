@@ -1,6 +1,7 @@
 name: warroom
-description: Agentic war-room coordination bundle (no-op scaffold).
+description: Agentic war-room coordination bundle.
 skills:
   - warroom
+  - confidence-gate
 instruction: |
-  No-op placeholder. Replace with real coordination guidance when L1 lands.
+  War-room protocol. Follow confidence-gate before posting any claim to the channel.

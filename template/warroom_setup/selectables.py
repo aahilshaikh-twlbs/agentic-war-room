@@ -68,6 +68,9 @@ TEXT_FIELDS = [
     TextField(id="SLACK_APP_TOKEN", prompt="Slack app token (xapp-...)", secret=True,
               required=False, enable_if="channels.slack"),
     TextField(id="warroom.board", prompt="War-room board name", required=False, enable_if="warroom.enroll"),
+    TextField(id="warroom.min_confidence",
+              prompt="War-room min confidence % to post a claim (0-100)",
+              required=False, enable_if="warroom.enroll"),
 ]
 
 # Secrets that must NEVER be written to the answers JSON (only to .env).
