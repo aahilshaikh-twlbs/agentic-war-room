@@ -65,3 +65,27 @@ def test_check_reports_drift_without_writing(tmp_path):
     rc = persona_sync.run(root / "manifest.json", root, IDENT, check=True)
     assert rc == 1
     assert target.read_text() == "stale\n"     # never written in check mode
+
+
+def test_shipped_manifest_compiles_against_seeded_overlay(tmp_path):
+    # Simulate an installed profile: copy persona/ -> local/persona/, then compile.
+    import shutil
+    src = Path(__file__).resolve().parents[1]
+    prof = tmp_path / "prof"
+    for d in ("persona", "templates", "shared"):
+        shutil.copytree(src / d, prof / d)
+    shutil.copy2(src / "manifest.json", prof / "manifest.json")
+    (prof / "local").mkdir()
+    shutil.copytree(prof / "persona", prof / "local" / "persona")
+    rc = persona_sync.run(prof / "manifest.json", prof, IDENT, check=False)
+    assert rc == 0
+    soul = (Path.home() / ".hermes" / "profiles" / "aria-sh" / "SOUL.md")
+    head = (Path.home() / ".claude" / "agents" / "aria.md")
+    try:
+        assert soul.is_file() and head.is_file()
+        assert "{{" not in soul.read_text() and "{{" not in head.read_text()
+        assert "## Voice" in soul.read_text()
+    finally:
+        for p in (soul, head):
+            if p.exists():
+                p.unlink()
