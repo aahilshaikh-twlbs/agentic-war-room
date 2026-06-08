@@ -14,18 +14,16 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from . import answers as answers_mod
-from . import persona_sync, prompts, render, selectables
+from . import persona_sync, prompts, render, schema, selectables, validators
 from .agent_model import AgentIdentity
 from .agent_model import load as load_identity
 from .agent_model import save as save_identity
 
 
-_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
-
-
-def _validate_slug(s):
-    # type: (str) -> bool
-    return bool(_SLUG_RE.match(s or ""))
+# Validators now live in validators.py (single source of truth). Kept as a
+# module-level alias for backward compatibility with callers/tests that import
+# setup._validate_slug.
+_validate_slug = validators.valid_slug
 
 
 def _slugify(s):
@@ -51,15 +49,9 @@ _WR_BEGIN = "# >>> warroom-managed (set via `warroom setup`) >>>"
 _WR_END = "# <<< warroom-managed <<<"
 
 
-def _clamp_pct(s, default=75):
-    # type: (str, int) -> int
-    s = (s or "").strip()
-    if not s:
-        return default
-    try:
-        return max(0, min(100, int(s)))
-    except ValueError:
-        return default
+# Percentage clamp now lives in schema.py (single source of truth). Kept as a
+# module-level alias for backward compatibility with callers/tests.
+_clamp_pct = schema.clamp_pct
 
 
 def seed_overlay(profile_root):
@@ -77,17 +69,23 @@ def seed_overlay(profile_root):
             shutil.copy2(f, target)
 
 
-def write_env(profile_root, env_values):
-    # type: (Path, Dict[str, str]) -> None
-    """Write .env by overlaying provided values onto .env.EXAMPLE keys. Keys not in
-    the example are appended. Existing .env values are overwritten for provided keys,
-    preserved otherwise."""
+def write_env(profile_root, env_values, filename=".env"):
+    # type: (Path, Dict[str, str], str) -> None
+    """Write an env file by overlaying provided values onto the base file's keys.
+    Keys not in the base are appended. Existing values are overwritten for provided
+    keys, preserved otherwise.
+
+    filename selects the target relative to profile_root (default ".env"). Only the
+    canonical .env is seeded from .env.EXAMPLE; a custom filename (e.g.
+    "local/sentinel.env") starts from its own existing contents or empty, and its
+    parent dirs are created as needed."""
+    profile_root = Path(profile_root)
     example = profile_root / ".env.EXAMPLE"
-    env_path = profile_root / ".env"
+    env_path = profile_root / filename
     base_lines = []
     if env_path.exists():
         base_lines = env_path.read_text(encoding="utf-8").splitlines()
-    elif example.exists():
+    elif filename == ".env" and example.exists():
         base_lines = example.read_text(encoding="utf-8").splitlines()
     seen = set()  # type: Set[str]
     out = []
@@ -103,31 +101,57 @@ def write_env(profile_root, env_values):
     for key, val in env_values.items():
         if key not in seen:
             out.append("%s=%s" % (key, val))
+    env_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = str(env_path) + ".tmp"
     Path(tmp).write_text("\n".join(out) + "\n", encoding="utf-8")
     os.replace(tmp, str(env_path))
     _secure_file(env_path)
 
 
-def patch_war_room_block(profile_root, board, min_confidence=75, gate_action="abstain",
-                         enforce=False, show_confidence_badge=True):
-    # type: (Path, str, int, str, bool, bool) -> None
+def _yaml_scalar(v):
+    # type: (object) -> str
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def patch_war_room_block(profile_root, board=None, **overrides):
+    # type: (Path, object, object) -> None
     """Idempotently write the sentinel-managed war_room block (update in place if
-    present, else append). Line-based, no YAML dependency."""
+    present, else append). Line-based, no YAML dependency.
+
+    Defaults are sourced from schema.DEFAULTS; any key in schema.WAR_ROOM_KEYS may
+    be passed as a kwarg (label, role, enabled, gate_action, ...). The legacy
+    (board, min_confidence=, gate_action=, enforce=, show_confidence_badge=)
+    calling convention is preserved unchanged. Empty-string values are omitted so
+    the rendered block stays clean; board falls back to "default" when blank.
+    """
+    unknown = set(overrides) - set(schema.WAR_ROOM_KEYS)
+    if unknown:
+        raise TypeError(
+            "patch_war_room_block() got unexpected war_room keys: %s"
+            % ", ".join(sorted(unknown))
+        )
+
+    values = dict(schema.DEFAULTS)
+    values.update(overrides)
+    if board is not None:
+        values["board"] = board
+    values["board"] = (values.get("board") or "default")
+    values["min_confidence"] = schema.clamp_pct(values.get("min_confidence"))
+
     cfg = Path(profile_root) / "config.yaml"
     text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
-    block = "\n".join([
-        _WR_BEGIN,
-        "war_room:",
-        "  enabled: true",
-        "  board: %s" % (board or "default"),
-        "  role: contributor",
-        "  min_confidence: %d" % int(min_confidence),
-        "  gate_action: %s" % gate_action,
-        "  enforce: %s" % ("true" if enforce else "false"),
-        "  show_confidence_badge: %s" % ("true" if show_confidence_badge else "false"),
-        _WR_END,
-    ])
+
+    lines = [_WR_BEGIN, "war_room:"]
+    for key in schema.WAR_ROOM_KEYS:
+        val = values.get(key)
+        if val is None or (isinstance(val, str) and val == ""):
+            continue
+        lines.append("  %s: %s" % (key, _yaml_scalar(val)))
+    lines.append(_WR_END)
+    block = "\n".join(lines)
+
     if _WR_BEGIN in text and _WR_END in text:
         pre = text.split(_WR_BEGIN, 1)[0].rstrip("\n")
         post = text.split(_WR_END, 1)[1]
@@ -135,6 +159,50 @@ def patch_war_room_block(profile_root, board, min_confidence=75, gate_action="ab
     else:
         new = text.rstrip("\n") + "\n\n" + block + "\n"
     cfg.write_text(new, encoding="utf-8")
+
+
+_PERSONA_SENTINEL_ABBR = {"warroom": "WR"}
+
+
+def _persona_sentinels(sentinel_id):
+    # type: (str) -> tuple
+    abbr = _PERSONA_SENTINEL_ABBR.get(sentinel_id)
+    if abbr is None:
+        abbr = re.sub(r"[^A-Za-z0-9]+", "_", str(sentinel_id)).strip("_").upper() or "WR"
+    return ("<!-- _%s_PERSONA_BEGIN -->" % abbr, "<!-- _%s_PERSONA_END -->" % abbr)
+
+
+def patch_persona_decisions(profile_root, rule_text, sentinel_id="warroom"):
+    # type: (Path, str, str) -> bool
+    """Accumulate a persona rule into the sentinel-managed region of the
+    user-owned local/persona/decisions.md overlay.
+
+    Unlike patch_war_room_block (full replace), this APPENDS rule_text inside
+    the region and never clobbers existing content -- so owner hand-edits made
+    between the sentinels survive. Idempotent: a rule already present in the
+    region is a no-op. Returns True iff the file changed.
+    """
+    begin, end = _persona_sentinels(sentinel_id)
+    rule = (rule_text or "").strip()
+    target = Path(profile_root) / "local" / "persona" / "decisions.md"
+    text = target.read_text(encoding="utf-8") if target.exists() else ""
+
+    if begin in text and end in text:
+        head, rest = text.split(begin, 1)
+        region, tail = rest.split(end, 1)
+        if rule and rule in region:
+            return False  # idempotent no-op
+        new_region = region.rstrip("\n") + ("\n" + rule if rule else "") + "\n"
+        new = head + begin + "\n" + new_region.lstrip("\n") + end + tail
+    else:
+        block = "\n".join([begin, rule, end]) if rule else "\n".join([begin, end])
+        new = (text.rstrip("\n") + "\n\n" + block + "\n") if text.strip() else (block + "\n")
+
+    if new == text:
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(new, encoding="utf-8")
+    return True
 
 
 def _resolve_toggles(profile_root, yes, reconfigure, toggle_in_stream, out_stream):
@@ -194,10 +262,10 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
         agent_name = values.get("agent_name", "").strip() or (prior_ident.agent_name if prior_ident else "warroom")
         handle = values.get("handle", "").strip() or agent_name
         display = values.get("display_name", "").strip() or agent_name
-        if not _validate_slug(agent_name):
+        if not validators.valid_slug(agent_name):
             out_stream.write("  agent_name %r invalid (need ^[a-z][a-z0-9-]*$); slugifying\n" % agent_name)
             agent_name = _slugify(agent_name)
-        if not _validate_slug(handle):
+        if not validators.valid_handle(handle):
             handle = agent_name
         model = "sonnet" if "model.sonnet" in selected and "model.opus" not in selected else "opus"
         fingerprint = prior_ident.agent_fingerprint if prior_ident else "%s-%s" % (agent_name, uuid.uuid4().hex[:12])
@@ -208,10 +276,10 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
     # .env: only env-mapped values.
     env_values = {k: v for k, v in values.items() if k in selectables.ENV_FIELD_IDS and v}
     if env_values:
-        write_env(profile_root, env_values)
+        write_env(profile_root, env_values, filename=".env")
 
     if "warroom.enroll" in selected:
-        mc = _clamp_pct(values.get("warroom.min_confidence", ""))
+        mc = schema.clamp_pct(values.get("warroom.min_confidence", ""))
         patch_war_room_block(profile_root, values.get("warroom.board", "").strip(),
                              min_confidence=mc, enforce=("warroom.enforce" in selected))
 

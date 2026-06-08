@@ -19,6 +19,22 @@ def _abspath(p: str) -> str:
     return os.path.abspath(p)
 
 
+_LANE_PREFIX = "lane://"
+
+
+def _lane_name(arg: str) -> str:
+    """Return the bare lane name for an engine lane op.
+
+    A ``lane://`` URI is preserved verbatim -- it is NEVER routed through
+    ``os.path.abspath`` (which would mangle ``lane://x`` into ``<cwd>/lane:/x``
+    and silently fail the engine's lane conflict scan). The ``lane://`` prefix
+    is stripped here because the engine re-adds it canonically.
+    """
+    if arg.startswith(_LANE_PREFIX):
+        return arg[len(_LANE_PREFIX):]
+    return arg
+
+
 def _print_inbox(messages: list) -> None:
     if not messages:
         print("(no messages)")
@@ -42,6 +58,20 @@ def _print_claims(claims: list) -> None:
             c.get("kind", "?"),
             ",".join(c.get("paths", [])),
             ("  # " + c["note"]) if c.get("note") else "",
+        ))
+
+
+def _print_lanes(lanes: list) -> None:
+    if not lanes:
+        print("(no lanes)")
+        return
+    for l in lanes:
+        print("%-20s  %-5s  %-20s  %s%s" % (
+            l.get("lane", "?"),
+            "live" if l.get("live") else "stale",
+            l.get("label", "?"),
+            l.get("claim_id", "?"),
+            ("  # " + l["note"]) if l.get("note") else "",
         ))
 
 
@@ -74,6 +104,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("release")
     sp.add_argument("selector")
     sp.add_argument("--force", action="store_true")
+
+    # Lane subcommands: a lane argument is preserved verbatim (no _abspath).
+    sp = sub.add_parser("claim-lane")
+    sp.add_argument("lane")
+    sp.add_argument("--note", default=None)
+
+    sp = sub.add_parser("release-lane")
+    sp.add_argument("lane")
+
+    sub.add_parser("list-lanes")
 
     sp = sub.add_parser("seize")
     sp.add_argument("path")
@@ -137,6 +177,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             "selector": args.selector,
             "force": args.force,
         }
+    elif cmd == "claim-lane":
+        op = "claim_lane"
+        op_args = {
+            "session_id": session_id,
+            "lane": _lane_name(args.lane),
+            "note": args.note,
+        }
+    elif cmd == "release-lane":
+        op = "release_lane"
+        op_args = {
+            "session_id": session_id,
+            "lane": _lane_name(args.lane),
+        }
+    elif cmd == "list-lanes":
+        op = "list_lanes"
+        op_args = {"session_id": session_id}
     elif cmd == "seize":
         op = "seize"
         op_args = {
@@ -193,6 +249,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         _print_inbox(data or [])
     elif cmd == "claims":
         _print_claims(data or [])
+    elif cmd == "list-lanes":
+        _print_lanes(data or [])
     elif cmd == "ps":
         _print_ps(data or [])
     else:

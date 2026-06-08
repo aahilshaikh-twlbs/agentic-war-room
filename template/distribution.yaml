@@ -25,10 +25,11 @@ env_requires:
     required: false
 
 # Listed so update behavior is explicit. NOTE: persona/ and local/ are intentionally NOT here.
+# NOTE: MCP servers are configured inside config.yaml as `mcp_servers:`; there is no separate
+# mcp.json. config.yaml's distribution_owned coverage handles MCP refresh on `profile update`.
 distribution_owned:
   - SOUL.md
   - config.yaml
-  - mcp.json
   - skills
   - cron
   - distribution.yaml
