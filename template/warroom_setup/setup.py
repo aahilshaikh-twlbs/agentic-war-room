@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from . import answers as answers_mod
-from . import persona_sync, prompts, render, selectables
+from . import persona_sync, prompts, render, schema, selectables
 from .agent_model import AgentIdentity
 from .agent_model import load as load_identity
 from .agent_model import save as save_identity
@@ -116,25 +116,50 @@ def write_env(profile_root, env_values, filename=".env"):
     _secure_file(env_path)
 
 
-def patch_war_room_block(profile_root, board, min_confidence=75, gate_action="abstain",
-                         enforce=False, show_confidence_badge=True):
-    # type: (Path, str, int, str, bool, bool) -> None
+def _yaml_scalar(v):
+    # type: (object) -> str
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def patch_war_room_block(profile_root, board=None, **overrides):
+    # type: (Path, object, object) -> None
     """Idempotently write the sentinel-managed war_room block (update in place if
-    present, else append). Line-based, no YAML dependency."""
+    present, else append). Line-based, no YAML dependency.
+
+    Defaults are sourced from schema.DEFAULTS; any key in schema.WAR_ROOM_KEYS may
+    be passed as a kwarg (label, role, enabled, gate_action, ...). The legacy
+    (board, min_confidence=, gate_action=, enforce=, show_confidence_badge=)
+    calling convention is preserved unchanged. Empty-string values are omitted so
+    the rendered block stays clean; board falls back to "default" when blank.
+    """
+    unknown = set(overrides) - set(schema.WAR_ROOM_KEYS)
+    if unknown:
+        raise TypeError(
+            "patch_war_room_block() got unexpected war_room keys: %s"
+            % ", ".join(sorted(unknown))
+        )
+
+    values = dict(schema.DEFAULTS)
+    values.update(overrides)
+    if board is not None:
+        values["board"] = board
+    values["board"] = (values.get("board") or "default")
+    values["min_confidence"] = schema.clamp_pct(values.get("min_confidence"))
+
     cfg = Path(profile_root) / "config.yaml"
     text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
-    block = "\n".join([
-        _WR_BEGIN,
-        "war_room:",
-        "  enabled: true",
-        "  board: %s" % (board or "default"),
-        "  role: contributor",
-        "  min_confidence: %d" % int(min_confidence),
-        "  gate_action: %s" % gate_action,
-        "  enforce: %s" % ("true" if enforce else "false"),
-        "  show_confidence_badge: %s" % ("true" if show_confidence_badge else "false"),
-        _WR_END,
-    ])
+
+    lines = [_WR_BEGIN, "war_room:"]
+    for key in schema.WAR_ROOM_KEYS:
+        val = values.get(key)
+        if val is None or (isinstance(val, str) and val == ""):
+            continue
+        lines.append("  %s: %s" % (key, _yaml_scalar(val)))
+    lines.append(_WR_END)
+    block = "\n".join(lines)
+
     if _WR_BEGIN in text and _WR_END in text:
         pre = text.split(_WR_BEGIN, 1)[0].rstrip("\n")
         post = text.split(_WR_END, 1)[1]
