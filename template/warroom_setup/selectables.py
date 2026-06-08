@@ -73,6 +73,10 @@ TEXT_FIELDS = [
     TextField(id="warroom.min_confidence",
               prompt="War-room min confidence % to post a claim (0-100)",
               required=False, enable_if="warroom.enroll"),
+    # F10: appended AFTER min_confidence (never inserted between existing fields,
+    # which would silently reorder the wizard prompt sequence).
+    TextField(id="warroom.label", prompt="War-room label (defaults to handle)",
+              required=False, enable_if="warroom.enroll"),
 ]
 
 # Secrets that must NEVER be written to the answers JSON (only to .env).

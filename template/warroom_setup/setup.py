@@ -48,6 +48,48 @@ def _secure_dir(path):
 _WR_BEGIN = "# >>> warroom-managed (set via `warroom setup`) >>>"
 _WR_END = "# <<< warroom-managed <<<"
 
+_MB_BEGIN = "# >>> warroom-mailbox >>>"
+_MB_END = "# <<< warroom-mailbox <<<"
+
+
+def _replace_sentinel_block(text, begin, end, new_body):
+    # type: (str, str, str, str) -> str
+    """Replace the region delimited by the `begin`/`end` sentinel LINES with
+    `new_body` (which itself includes the begin/end lines), else append it.
+
+    Uses an anchored regex (`^begin$ ... ^end$`, MULTILINE|DOTALL) so a sentinel
+    string embedded mid-line in some other block's body is NOT matched — only a
+    bare sentinel line on its own. Surrounding text is preserved verbatim. The
+    replacement is supplied via a function to avoid backref interpretation of
+    `\\g`/`\\1` sequences in `new_body`.
+    """
+    pattern = re.compile(
+        r"^%s$.*?^%s$" % (re.escape(begin), re.escape(end)),
+        re.MULTILINE | re.DOTALL,
+    )
+    if pattern.search(text):
+        return pattern.sub(lambda _m: new_body, text)
+    if text.strip():
+        return text.rstrip("\n") + "\n\n" + new_body + "\n"
+    return new_body + "\n"
+
+
+def _atomic_write_text(path, text):
+    # type: (Path, str) -> None
+    """Write `text` to `path` atomically (tempfile in same dir + os.replace).
+    SIGTERM mid-write leaves the original intact. Best-effort tmp cleanup."""
+    path = Path(path)
+    tmp = str(path) + ".tmp"
+    try:
+        Path(tmp).write_text(text, encoding="utf-8")
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.replace(tmp, str(path))
+
 
 # Percentage clamp now lives in schema.py (single source of truth). Kept as a
 # module-level alias for backward compatibility with callers/tests.
@@ -152,14 +194,87 @@ def patch_war_room_block(profile_root, board=None, **overrides):
     lines.append(_WR_END)
     block = "\n".join(lines)
 
-    if _WR_BEGIN in text and _WR_END in text:
-        pre = text.split(_WR_BEGIN, 1)[0].rstrip("\n")
-        post = text.split(_WR_END, 1)[1]
-        new = (pre + "\n" + block + post)
-    else:
-        new = text.rstrip("\n") + "\n\n" + block + "\n"
-    cfg.write_text(new, encoding="utf-8")
+    new = _replace_sentinel_block(text, _WR_BEGIN, _WR_END, block)
+    _atomic_write_text(cfg, new)
 
+
+def patch_mailbox_block(profile_root, **overrides):
+    # type: (Path, object) -> None
+    """Idempotently write the sentinel-managed top-level `mailbox:` routing block
+    (locked decision #1: routing lives in config.yaml). Mirrors
+    patch_war_room_block but uses the distinct `# >>> warroom-mailbox >>>` pair
+    and the hardened anchored-regex replacer. All four MAILBOX_KEYS are always
+    rendered (empty values shown as `key: ""`) so the shipped template carries an
+    explicit empty `label`. Atomic write via tempfile + os.replace.
+    """
+    unknown = set(overrides) - set(schema.MAILBOX_KEYS)
+    if unknown:
+        raise TypeError(
+            "patch_mailbox_block() got unexpected mailbox keys: %s"
+            % ", ".join(sorted(unknown))
+        )
+    values = dict(schema.MAILBOX_DEFAULTS)
+    values.update(overrides)
+    values["board"] = (values.get("board") or "default")
+
+    cfg = Path(profile_root) / "config.yaml"
+    text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+
+    lines = [_MB_BEGIN, "mailbox:"]
+    for key in schema.MAILBOX_KEYS:
+        val = values.get(key, "")
+        if isinstance(val, str) and val == "":
+            lines.append('  %s: ""' % key)
+        else:
+            lines.append("  %s: %s" % (key, _yaml_scalar(val)))
+    lines.append(_MB_END)
+    block = "\n".join(lines)
+
+    new = _replace_sentinel_block(text, _MB_BEGIN, _MB_END, block)
+    _atomic_write_text(cfg, new)
+
+
+# Matches the `- command: "bash <...>first_run.sh"` line under hooks.on_session_start.
+# Hermes runs hooks with shell=False + arbitrary cwd and does NO {{PROFILE_ROOT}}
+# substitution, so the command must carry an absolute path. This rewriter is run
+# at install time (by enroll.bootstrap) to convert the shipped relative command
+# into an absolute one. Idempotent.
+_HOOK_CMD_RE = re.compile(
+    r'^(?P<pre>\s*-\s*command:\s*")bash\s+\S*?first_run\.sh(?P<post>"\s*)$',
+    re.MULTILINE,
+)
+
+
+def patch_hooks_command(profile_root):
+    # type: (Path) -> bool
+    """Rewrite hooks.on_session_start[*].command to an absolute
+    `bash <profile_root>/hooks/first_run.sh`. Idempotent; atomic write. Returns
+    True iff config.yaml changed. No-op (returns False) if config.yaml is absent
+    or the command line isn't present."""
+    profile_root = Path(profile_root)
+    cfg = profile_root / "config.yaml"
+    if not cfg.exists():
+        return False
+    text = cfg.read_text(encoding="utf-8")
+    abs_cmd = "bash %s" % (profile_root / "hooks" / "first_run.sh")
+
+    def _sub(m):
+        return "%sbash %s%s" % (m.group("pre"), profile_root / "hooks" / "first_run.sh", m.group("post"))
+
+    new = _HOOK_CMD_RE.sub(_sub, text)
+    if new == text:
+        return False
+    tmp = str(cfg) + ".tmp"
+    Path(tmp).write_text(new, encoding="utf-8")
+    os.replace(tmp, str(cfg))
+    return True
+
+
+_WARROOM_PERSONA_RULE = (
+    "- Before editing a file a board peer may also be touching, run "
+    "`mailbox claim-lane <lane>` to coordinate. Release with "
+    "`mailbox release-lane <lane>` when done."
+)
 
 _PERSONA_SENTINEL_ABBR = {"warroom": "WR"}
 
@@ -280,8 +395,23 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
 
     if "warroom.enroll" in selected:
         mc = schema.clamp_pct(values.get("warroom.min_confidence", ""))
-        patch_war_room_block(profile_root, values.get("warroom.board", "").strip(),
+        board = values.get("warroom.board", "").strip()
+        patch_war_room_block(profile_root, board,
                              min_confidence=mc, enforce=("warroom.enforce" in selected))
+        # Cross-agent runtime: bootstrap writes the mailbox: block (same board,
+        # keeping war_room.board / mailbox.board in sync per decision #13),
+        # persists runtime state, and installs the Claude Code SessionStart hook.
+        label = values.get("warroom.label", "").strip() or ident.handle
+        from . import enroll
+        st = enroll.bootstrap(profile_root, board, label)
+        # Teach the persona to use mailbox lane-claims ambiently (idempotent).
+        patch_persona_decisions(profile_root, _WARROOM_PERSONA_RULE,
+                                sentinel_id="warroom-runtime")
+        if st.status != "ok":
+            out_stream.write(
+                'war-room: mailbox CLI not found — see template/README.md '
+                '"Installing the mailbox runtime" to activate cross-agent features.\n'
+            )
 
     # Persist non-secret answers (deselected = default-on ids that ended up off).
     all_default = selectables.default_ids(selectables.TOGGLES)

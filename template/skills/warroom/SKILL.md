@@ -1,13 +1,34 @@
 ---
 name: warroom
-description: No-op war-room coordination scaffold. Placeholder for the /warroom bundle; activated when AWR L1 (mailbox client) lands.
-metadata:
-  hermes:
-    tags: [coordination, scaffold]
+description: Coordinate with other war-room agents on the shared board — see who's
+  here, claim a lane, broadcast findings, read inbox, release lanes when done.
 ---
 
-# Skill: War Room (no-op)
+# Skill: War Room
 
-This is a placeholder. It defines no behavior yet. When AWR's coordination layer
-(L1: mailbox client + orchestrator) lands, this skill carries the war-room
-protocol: join the board, claim a lane, broadcast findings.
+You are part of a war-room board with other agents. Use these commands to coordinate.
+
+## See who else is here
+```
+mailbox ps              # active peers on this board
+mailbox claims --all    # everyone's open file/lane claims
+```
+
+## Claim a work-lane before starting (prevents dogpiling)
+```
+mailbox claim-lane <lane-name> --note "<one-line scope>"
+```
+(allow → you have it; deny → someone owns it; warn → stale, ask first.)
+
+## Broadcast and read
+```
+mailbox send --to <peer-label> "<message>"
+mailbox send "<broadcast>"           # to = "*"
+mailbox inbox                        # read once; clears on read
+```
+
+## Release when done
+```
+mailbox release-lane <lane-name>
+mailbox list-lanes
+```
