@@ -52,3 +52,16 @@ def test_readme_documents_memory_convention():
 def test_channel_directory_is_empty_skeleton():
     data = json.loads((ROOT / "channel_directory.json").read_text(encoding="utf-8"))
     assert data == {"updated_at": None, "platforms": {}}
+
+
+# ---- T13: slack-manifest.json ----
+
+def test_slack_manifest_is_generic_with_placeholders():
+    raw = (ROOT / "slack-manifest.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert data["display_information"]["name"] == "<<APP_NAME>>"
+    assert data["features"]["bot_user"]["display_name"] == "<<BOT_HANDLE>>"
+    cmds = data["features"]["slash_commands"]
+    assert len(cmds) == 1
+    assert cmds[0]["command"] == "/ping"
+    assert "twelvelabs" not in raw.lower()
