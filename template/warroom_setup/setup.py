@@ -137,6 +137,50 @@ def patch_war_room_block(profile_root, board, min_confidence=75, gate_action="ab
     cfg.write_text(new, encoding="utf-8")
 
 
+_PERSONA_SENTINEL_ABBR = {"warroom": "WR"}
+
+
+def _persona_sentinels(sentinel_id):
+    # type: (str) -> tuple
+    abbr = _PERSONA_SENTINEL_ABBR.get(sentinel_id)
+    if abbr is None:
+        abbr = re.sub(r"[^A-Za-z0-9]+", "_", str(sentinel_id)).strip("_").upper() or "WR"
+    return ("<!-- _%s_PERSONA_BEGIN -->" % abbr, "<!-- _%s_PERSONA_END -->" % abbr)
+
+
+def patch_persona_decisions(profile_root, rule_text, sentinel_id="warroom"):
+    # type: (Path, str, str) -> bool
+    """Accumulate a persona rule into the sentinel-managed region of the
+    user-owned local/persona/decisions.md overlay.
+
+    Unlike patch_war_room_block (full replace), this APPENDS rule_text inside
+    the region and never clobbers existing content -- so owner hand-edits made
+    between the sentinels survive. Idempotent: a rule already present in the
+    region is a no-op. Returns True iff the file changed.
+    """
+    begin, end = _persona_sentinels(sentinel_id)
+    rule = (rule_text or "").strip()
+    target = Path(profile_root) / "local" / "persona" / "decisions.md"
+    text = target.read_text(encoding="utf-8") if target.exists() else ""
+
+    if begin in text and end in text:
+        head, rest = text.split(begin, 1)
+        region, tail = rest.split(end, 1)
+        if rule and rule in region:
+            return False  # idempotent no-op
+        new_region = region.rstrip("\n") + ("\n" + rule if rule else "") + "\n"
+        new = head + begin + "\n" + new_region.lstrip("\n") + end + tail
+    else:
+        block = "\n".join([begin, rule, end]) if rule else "\n".join([begin, end])
+        new = (text.rstrip("\n") + "\n\n" + block + "\n") if text.strip() else (block + "\n")
+
+    if new == text:
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(new, encoding="utf-8")
+    return True
+
+
 def _resolve_toggles(profile_root, yes, reconfigure, toggle_in_stream, out_stream):
     # type: (Path, bool, bool, object, object) -> Set[str]
     """ccpkg precedence ladder adapted: reconfigure&tty -> wizard; profile -> replay;
