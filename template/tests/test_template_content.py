@@ -79,3 +79,25 @@ def test_cron_readme_documents_schema():
     for field in ("id", "name", "prompt", "schedule", "enabled"):
         assert field in readme
     assert "twelvelabs" not in readme.lower()
+
+
+# ---- T16: .env.template (no .env.example; Hermes renames .env.template) ----
+
+def test_env_template_has_commented_mailbox_override():
+    lines = (ROOT / ".env.template").read_text(encoding="utf-8").splitlines()
+    # The override is present but COMMENTED OUT by default.
+    assert any(l.strip() == "#MAILBOX_BOARD_OVERRIDE=" for l in lines)
+    # It must NOT appear as an active (uncommented) key.
+    assert not any(l.strip() == "MAILBOX_BOARD_OVERRIDE=" for l in lines)
+
+
+def test_env_template_keys_consistent_with_distribution():
+    env_keys = set()
+    for line in (ROOT / ".env.template").read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and s.endswith("="):
+            env_keys.add(s[:-1])
+    dist = (ROOT / "distribution.yaml").read_text(encoding="utf-8")
+    req = set(re.findall(r"- name:\s*(\S+)", dist))
+    # every declared env_requires key must exist in .env.template
+    assert req <= env_keys, "env_requires not covered by .env.template: %s" % (req - env_keys)
