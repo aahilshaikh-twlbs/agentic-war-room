@@ -60,3 +60,24 @@ def test_personalities_have_descriptions_and_suffixes():
     block = CFG.split("personalities:", 1)[1]
     assert block.count("description:") >= 5
     assert block.count("system_prompt_suffix:") >= 5
+
+
+# ---- T19: platform_toolsets in its own sentinel block ----
+
+def test_toolsets_sentinel_block_distinct_from_managed():
+    assert "# >>> warroom-toolsets >>>" in CFG
+    assert "# <<< warroom-toolsets <<<" in CFG
+    # distinct from the war_room managed block
+    assert "# >>> warroom-toolsets >>>" != "# >>> warroom-managed (set via `warroom setup`) >>>"
+    # the toolsets block must not swallow the war_room managed block
+    toolsets = CFG.split("# >>> warroom-toolsets >>>", 1)[1].split("# <<< warroom-toolsets <<<", 1)[0]
+    assert "war_room:" not in toolsets
+
+
+def test_platform_toolsets_has_cli_discord_slack():
+    assert re.search(r"^platform_toolsets:", CFG, re.M)
+    block = CFG.split("platform_toolsets:", 1)[1].split("# <<< warroom-toolsets", 1)[0]
+    for platform in ("cli:", "discord:", "slack:"):
+        assert re.search(r"^  %s" % re.escape(platform), block, re.M), "missing %s" % platform
+    assert "- hermes-discord" in block
+    assert "- hermes-slack" in block

@@ -51,3 +51,31 @@ personalities:
   noir:
     description: Terse, atmospheric, hard-boiled narration.
     system_prompt_suffix: "Narrate in a terse, hard-boiled noir register. Short sentences. Dry."
+# Per-platform toolset routing. Managed in its own sentinel block (distinct from
+# warroom-managed) so future templating can rewrite it cleanly. Toolset names are
+# Hermes built-ins; edit the lists to change what each surface can do.
+# >>> warroom-toolsets >>>
+platform_toolsets:
+  cli:
+  - browser
+  - clarify
+  - code_execution
+  - computer_use
+  - cronjob
+  - delegation
+  - file
+  - image_gen
+  - memory
+  - messaging
+  - session_search
+  - skills
+  - terminal
+  - todo
+  - tts
+  - vision
+  - web
+  discord:
+  - hermes-discord
+  slack:
+  - hermes-slack
+# <<< warroom-toolsets <<<
