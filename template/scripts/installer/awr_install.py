@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Set
 import in_process_orchestrator as orch
 import masked_prompt
 import profile_detect
+import rollback as rollback_mod
 import sidecar_state
 from _substrate import validators
 from _substrate.discord_walkthrough import (
@@ -625,6 +626,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         stage_timeout=args.stage_timeout,
         skip_install=skip_install,
     )
+
+    if result.exit_code != 0 and result.failed_stage is not None and not skip_install:
+        # Hard failure: offer rollback (refused unconditionally if user data).
+        do_rollback = True
+        if not args.headless:
+            choice = input(
+                "Install failed at stage %d. [r]ollback / [k]eep partial? [r] "
+                % result.failed_stage
+            ).strip().lower()
+            do_rollback = choice == "" or choice.startswith("r")
+        if do_rollback:
+            rb = rollback_mod.rollback(
+                profile_root, stages_completed=result.completed_stages, logger=print
+            )
+            print(rb.reason)
+
     if result.exit_code == 0 and not args.dry_run:
         sidecar.cleanup()
     return result.exit_code
