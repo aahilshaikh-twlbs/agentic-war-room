@@ -109,8 +109,9 @@ def write_env(profile_root, env_values):
     _secure_file(env_path)
 
 
-def patch_war_room_block(profile_root, board, min_confidence=75, gate_action="abstain"):
-    # type: (Path, str, int, str) -> None
+def patch_war_room_block(profile_root, board, min_confidence=75, gate_action="abstain",
+                         enforce=False, show_confidence_badge=True):
+    # type: (Path, str, int, str, bool, bool) -> None
     """Idempotently write the sentinel-managed war_room block (update in place if
     present, else append). Line-based, no YAML dependency."""
     cfg = Path(profile_root) / "config.yaml"
@@ -123,6 +124,8 @@ def patch_war_room_block(profile_root, board, min_confidence=75, gate_action="ab
         "  role: contributor",
         "  min_confidence: %d" % int(min_confidence),
         "  gate_action: %s" % gate_action,
+        "  enforce: %s" % ("true" if enforce else "false"),
+        "  show_confidence_badge: %s" % ("true" if show_confidence_badge else "false"),
         _WR_END,
     ])
     if _WR_BEGIN in text and _WR_END in text:
@@ -209,7 +212,8 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
 
     if "warroom.enroll" in selected:
         mc = _clamp_pct(values.get("warroom.min_confidence", ""))
-        patch_war_room_block(profile_root, values.get("warroom.board", "").strip(), min_confidence=mc)
+        patch_war_room_block(profile_root, values.get("warroom.board", "").strip(),
+                             min_confidence=mc, enforce=("warroom.enforce" in selected))
 
     # Persist non-secret answers (deselected = default-on ids that ended up off).
     all_default = selectables.default_ids(selectables.TOGGLES)

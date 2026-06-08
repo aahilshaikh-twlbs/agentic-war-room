@@ -51,6 +51,8 @@ TOGGLES = [
     Toggle(id="model.sonnet", group="Model", desc="Claude Sonnet", default=False),
     Toggle(id="warroom.enroll", group="WarRoom",
            desc="enroll on an AWR coordination board (stub until L1)", default=True),
+    Toggle(id="warroom.enforce", group="WarRoom",
+           desc="structurally enforce the confidence gate (suppress ungrounded claims)", default=True),
 ]
 
 # Identity is always asked; channel secrets are asked only if the channel is enabled.

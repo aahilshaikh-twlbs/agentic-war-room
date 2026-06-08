@@ -25,7 +25,11 @@ war_room:
   role: contributor
   min_confidence: 75
   gate_action: abstain
+  enforce: false
+  show_confidence_badge: true
 # <<< warroom-managed <<<
 hooks:
   on_session_start: bash hooks/first_run.sh
 hooks_auto_accept: true   # required for unattended first-run; remove to force consent
+plugins:
+  enabled: true
