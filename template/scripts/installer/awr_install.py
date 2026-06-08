@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+import in_process_orchestrator as orch
 import masked_prompt
+import profile_detect
 from _substrate import validators
 from _substrate.discord_walkthrough import (
     DiscordCreds,
@@ -592,14 +594,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("awr_install %s: resume mode (skeleton)" % __version__)
         return 0
 
-    # Interactive + headless both collect answers via run_tui. The execute phase
-    # (T6) consumes the returned InstallerAnswers.
+    # Interactive + headless both collect answers via run_tui; the execute phase
+    # consumes them in-process.
     answers = run_tui(args)
     if answers is None:
         return 1
-    print("awr_install %s: collected answers for profile %r (execute phase: T6)"
-          % (__version__, answers.profile_name))
-    return 0
+
+    profiles_root = Path("~/.hermes/profiles").expanduser()
+    profile_root = profiles_root / answers.profile_name
+    inspection = profile_detect.inspect_profile(profile_root)
+    action = profile_detect.collision_strategy(inspection, force=args.force)
+    if action == profile_detect.ABORT:
+        print("Refusing to install %r: %s" % (answers.profile_name, inspection.reason))
+        return 2
+    skip_install = action == profile_detect.RECONFIGURE
+
+    result = orch.execute(
+        answers,
+        dry_run=args.dry_run,
+        verbose=args.verbose,
+        stage_timeout=args.stage_timeout,
+        skip_install=skip_install,
+    )
+    return result.exit_code
 
 
 if __name__ == "__main__":
