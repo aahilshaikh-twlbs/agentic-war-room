@@ -99,6 +99,8 @@ def test_cli_enroll_status_returns_exit_0_when_all_ok(tmp_path):
         stop.set()
         srv.close()
         t.join(timeout=2)
+        import shutil
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 def test_cli_enroll_dry_run_propagates_flag(tmp_path, monkeypatch):
