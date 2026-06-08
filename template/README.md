@@ -4,6 +4,8 @@ A personalizable Hermes agent for the Agentic War Room: Discord + Slack in, a
 dual-runtime persona (Hermes `SOUL.md` + a Claude Code head), and a stub that
 joins an AWR coordination board.
 
+_Shared-core (mailbox routing, Discord/Slack walkthroughs, sanitization guard) as of 2026-06-08._
+
 ## Prerequisites
 1. Install Hermes Agent (>=0.12): see the Hermes docs. Confirm with `hermes --version`.
 

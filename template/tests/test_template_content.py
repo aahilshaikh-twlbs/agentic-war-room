@@ -149,3 +149,10 @@ def test_readme_preserves_existing_sections():
     assert "## Verified" in readme
     assert "## Known limitations" in readme
     assert "local/.warroom-setup.json" in readme     # original known-limitation bullet
+
+
+# ---- T24: README currency stamp ----
+
+def test_readme_has_as_of_date_stamp():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert re.search(r"as of \d{4}-\d{2}-\d{2}", readme)
