@@ -290,3 +290,102 @@ def test_assimilate_confirm_yes_proceeds(tmp_path):
                                in_stream=io.StringIO("y\n"), out=out)
     assert rc == 0
     assert setup._WR_BEGIN in (prof / "config.yaml").read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# T8 -- walkthrough integration + .env creds merge (before enroll.bootstrap)
+# --------------------------------------------------------------------------- #
+def _fake_prompts(answers):
+    def prompts(step, context=None):
+        assert context == "assimilate"
+        return answers.get(step.n, "")
+    return prompts
+
+
+def _boom_prompts(*a, **k):
+    raise AssertionError("walkthrough prompts should not be invoked")
+
+
+def test_assimilate_no_walkthrough_skips_both(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)
+    out = io.StringIO()
+    rc = assimilate.assimilate(prof, board="shared", label="beta-sh",
+                               no_walkthrough=True, yes=True,
+                               prompts=_boom_prompts, out=out)
+    assert rc == 0
+    assert "war-room will be CLI-only" in out.getvalue()
+
+
+def test_assimilate_skips_walkthrough_when_both_creds_present(tmp_path):
+    prof = tmp_path / "prof"
+    prof.mkdir()
+    (prof / "config.yaml").write_text("model:\n  name: opus\n", encoding="utf-8")
+    (prof / ".env").write_text(
+        "DISCORD_BOT_TOKEN=x\nSLACK_BOT_TOKEN=y\n", encoding="utf-8")
+    out = io.StringIO()
+    rc = assimilate.assimilate(prof, board="shared", label="beta-sh",
+                               yes=True, prompts=_boom_prompts, out=out)
+    assert rc == 0  # both channels present -> no walkthrough invoked
+
+
+def test_assimilate_skips_discord_walkthrough_when_token_present(tmp_path, monkeypatch):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN_DISCORD, prof)  # discord present, slack absent
+    monkeypatch.setattr(assimilate.discord_walkthrough,
+                        "run_discord_walkthrough", _boom_prompts)
+    out = io.StringIO()
+    rc = assimilate.assimilate(
+        prof, board="shared", label="beta-sh", yes=True, out=out,
+        prompts=_fake_prompts({2: "slack-app", 4: "slack-bot", 6: "slack-chan"}))
+    assert rc == 0
+    env = (prof / ".env").read_text(encoding="utf-8")
+    assert "DISCORD_BOT_TOKEN=placeholder-discord-token" in env  # preserved
+    assert "SLACK_BOT_TOKEN=slack-bot" in env  # slack walkthrough ran
+
+
+def test_assimilate_collects_creds_and_writes_env(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)  # no .env at all
+    out = io.StringIO()
+    rc = assimilate.assimilate(
+        prof, board="shared", label="beta-sh", yes=True, out=out,
+        prompts=_fake_prompts({2: "disc-tok", 4: "slack-bot",
+                               5: "disc-chan", 6: "slack-chan"}))
+    assert rc == 0
+    env = (prof / ".env").read_text(encoding="utf-8")
+    assert "DISCORD_BOT_TOKEN=disc-tok" in env
+    assert "SLACK_BOT_TOKEN=slack-bot" in env
+    assert "war-room will be CLI-only" not in out.getvalue()
+
+
+def test_assimilate_yes_without_no_walkthrough_is_usage_error(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)  # creds missing
+    out = io.StringIO()
+    rc = assimilate.assimilate(prof, board="shared", label="beta-sh",
+                               yes=True, out=out)  # prompts=None, headless
+    assert rc == 4
+    assert "needs --no-walkthrough" in out.getvalue()
+
+
+def test_assimilate_no_walkthrough_no_creds_warns_but_proceeds(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)
+    out = io.StringIO()
+    rc = assimilate.assimilate(prof, board="shared", label="beta-sh",
+                               no_walkthrough=True, yes=True, out=out)
+    assert rc == 0
+    assert "channels: none configured; war-room will be CLI-only" in out.getvalue()
+
+
+def test_default_prompts_collects_and_skips_optional():
+    token = "AAAAAAAAAAAAAAAAAAAA.BBBBB.CCCCCCCCCCCCCCCCCCCC"
+    in_stream = io.StringIO(token + "\n12345678901234567\n\n")
+    out = io.StringIO()
+    driver = assimilate._default_prompts(in_stream, out)
+    creds = assimilate.discord_walkthrough.run_discord_walkthrough(
+        driver, context="assimilate")
+    assert creds.bot_token == token
+    assert creds.channel_id == "12345678901234567"
+    assert creds.second_channel_id == ""

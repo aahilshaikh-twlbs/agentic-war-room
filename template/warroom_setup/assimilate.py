@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from . import setup, validators
+from . import discord_walkthrough, setup, slack_walkthrough, validators
 
 # Exit-code contract (mirrors enroll's; consumed by the CLI dispatch in T6+).
 EXIT_OK = 0            # assimilated (or dry-run reported cleanly)
@@ -165,6 +165,78 @@ def _report(info, profile_root, board, label, out, dry_run=False):
         out.write("[dry-run] no files written.\n")
 
 
+def _default_prompts(in_stream, out, max_retries=3):
+    """Build a UI-agnostic walkthrough `prompts` callable that reads answers from
+    `in_stream` and echoes step text to `out`. Mirrors the installer's step
+    driver (display body -> prompt -> validate/retry -> skip-optional-on-blank).
+    Used only for the real interactive CLI; tests inject their own `prompts`."""
+    def prompts(step, context=None):
+        out.write("\n[%s] %s\n" % (step.n, step.title))
+        for line in step.body_lines:
+            out.write("  %s\n" % line)
+        if not step.prompt_label:
+            return ""
+        attempts = 0
+        while True:
+            attempts += 1
+            out.write("%s: " % step.prompt_label)
+            try:
+                out.flush()
+            except Exception:  # pragma: no cover - guard real fds
+                pass
+            val = (in_stream.readline() or "").strip()
+            if step.optional and val == "":
+                return ""
+            if step.validator is None or step.validator(val):
+                return val
+            if attempts >= max_retries:
+                out.write("  still invalid after %d tries; skipping (set it "
+                          "manually in .env later).\n" % max_retries)
+                return ""
+            out.write("  invalid; try again (%d/%d).\n" % (attempts, max_retries))
+    return prompts
+
+
+def _run_walkthroughs(info, no_walkthrough, yes, prompts, in_stream, out):
+    # type: (dict, bool, bool, object, object, object) -> Optional[dict]
+    """Conditionally run the Discord/Slack walkthroughs for channels whose creds
+    are NOT already wired, and return the collected .env values to merge. Returns
+    None to signal a headless usage error (caller maps to exit 4). Channels that
+    already have creds (info["channels"]) are skipped to preserve existing wiring.
+    """
+    needs_discord = not info["channels"]["discord"]
+    needs_slack = not info["channels"]["slack"]
+    creds_env = {}  # type: dict
+    if no_walkthrough or not (needs_discord or needs_slack):
+        return creds_env
+
+    driver = prompts
+    if driver is None:
+        if yes:
+            out.write("assimilate: --yes needs --no-walkthrough (or pre-set "
+                      "channel creds); cannot run an interactive walkthrough "
+                      "headlessly\n")
+            return None  # usage error -> exit 4
+        driver = _default_prompts(
+            in_stream if in_stream is not None else sys.stdin, out)
+
+    if needs_discord:
+        dc = discord_walkthrough.run_discord_walkthrough(driver, context="assimilate")
+        if dc.bot_token:
+            creds_env["DISCORD_BOT_TOKEN"] = dc.bot_token
+        if dc.channel_id:
+            creds_env["DISCORD_HOME_CHANNEL"] = dc.channel_id
+    if needs_slack:
+        sc = slack_walkthrough.run_slack_walkthrough(driver, context="assimilate")
+        if sc.app_token:
+            creds_env["SLACK_APP_TOKEN"] = sc.app_token
+        if sc.bot_token:
+            creds_env["SLACK_BOT_TOKEN"] = sc.bot_token
+        if sc.channel_id:
+            creds_env["SLACK_HOME_CHANNEL"] = sc.channel_id
+    return creds_env
+
+
 def assimilate(profile_root, *, board="default", label=None, dry_run=False,
                reconfigure=False, no_walkthrough=False, enforce=False,
                yes=False, env=None, out=None, prompts=None, in_stream=None):
@@ -234,7 +306,23 @@ def assimilate(profile_root, *, board="default", label=None, dry_run=False,
             out.write("assimilate: aborted by operator (no changes written)\n")
             return EXIT_ABORTED
 
+    # 4b. Walkthroughs (conditional) -- collect creds for channels not yet wired.
+    creds_env = _run_walkthroughs(info, no_walkthrough, yes, prompts, in_stream, out)
+    if creds_env is None:
+        return EXIT_ABORTED  # headless usage error
+    has_channel = (info["channels"]["discord"] or info["channels"]["slack"]
+                   or bool(creds_env))
+    if not has_channel:
+        out.write("warning: channels: none configured; war-room will be "
+                  "CLI-only\n")
+
     # 5. Patches (atomic, preserve-don't-clobber).
+    #    5d (synthesis fix): persist walkthrough creds to .env BEFORE
+    #       enroll.bootstrap, so a later bootstrap failure never strands a
+    #       freshly-collected Discord/Slack token. write_env merges (existing
+    #       keys, e.g. an operator's other tokens, survive).
+    if creds_env:
+        setup.write_env(profile_root, creds_env, filename=".env")
     #    5a. war_room block. enforce defaults OFF -- gentler on an existing
     #        operator's outputs at first contact; --enforce opts in.
     setup.patch_war_room_block(profile_root, board, label=resolved_label,
