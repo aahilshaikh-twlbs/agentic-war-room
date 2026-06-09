@@ -50,6 +50,66 @@ def test_replace_appends_when_sentinels_missing():
     assert out.count(MB_B) == 1
 
 
+def _count_key(text, key):
+    return sum(1 for ln in text.splitlines() if ln.startswith(key + ":"))
+
+
+# --------------------------------------------------------------------------- #
+# Option B -- YAML-key fallback (re-anchor onto a bare top-level key span when
+# sentinels are absent, e.g. after a PyYAML re-emit stripped the comments).
+# --------------------------------------------------------------------------- #
+def test_fallback_replaces_bare_yaml_key_block():
+    text = "top: 1\nmailbox:\n  board: shared\n  label: x\n\nother: 2\n"
+    new_mb = "\n".join([MB_B, "mailbox:", "  board: shared", "  label: y", MB_E])
+    out = setup._replace_sentinel_block(text, MB_B, MB_E, new_mb, yaml_key="mailbox")
+    assert _count_key(out, "mailbox") == 1
+    assert MB_B in out and MB_E in out
+    assert "top: 1" in out and "other: 2" in out
+    # The blank-line separator that trailed the bare span must survive so the new
+    # sentinelled block does not butt directly against the next top-level key.
+    assert MB_E + "\n\nother: 2" in out
+
+
+def test_fallback_does_not_match_lookalike_key():
+    text = "top: 1\nmailboxes_other:\n  board: shared\n  keep: yes\nbottom: 2\n"
+    new_mb = "\n".join([MB_B, "mailbox:", "  board: x", MB_E])
+    out = setup._replace_sentinel_block(text, MB_B, MB_E, new_mb, yaml_key="mailbox")
+    # lookalike NOT matched -> the block is appended, lookalike survives verbatim.
+    assert "mailboxes_other:" in out and "  keep: yes" in out
+    assert _count_key(out, "mailbox") == 1
+    assert MB_B in out and MB_E in out
+
+
+def test_fallback_preserves_indented_continuation():
+    text = ("mailbox:\n  board: shared\n  nested:\n    deep: 1\n\n"
+            "  more: 2\nnext_top: 3\n")
+    new_mb = "\n".join([MB_B, "mailbox:", "  board: shared", MB_E])
+    out = setup._replace_sentinel_block(text, MB_B, MB_E, new_mb, yaml_key="mailbox")
+    assert _count_key(out, "mailbox") == 1
+    assert "next_top: 3" in out
+    # the entire bare span (incl. nested map + interior blank line) is replaced
+    assert "nested:" not in out and "deep: 1" not in out and "more: 2" not in out
+    # there was no blank line before next_top -> none is fabricated
+    assert MB_E + "\nnext_top: 3" in out
+
+
+def test_fallback_ignored_when_sentinels_present():
+    # Pathological: a sentinelled block AND a stray bare mailbox: key.
+    text = "\n".join([
+        MB_B, "mailbox:", "  board: old", MB_E,
+        "",
+        "mailbox:", "  board: stray",
+        "",
+        "bottom: 1",
+    ]) + "\n"
+    new_mb = "\n".join([MB_B, "mailbox:", "  board: new", MB_E])
+    out = setup._replace_sentinel_block(text, MB_B, MB_E, new_mb, yaml_key="mailbox")
+    # Sentinel match wins; only the sentinelled block is rewritten. The bare one
+    # survives (caller's responsibility) -- fallback is strictly secondary.
+    assert "board: new" in out and "board: stray" in out
+    assert _count_key(out, "mailbox") == 2
+
+
 def test_replace_atomic_under_simulated_sigterm(tmp_path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("model: {}\n", encoding="utf-8")
