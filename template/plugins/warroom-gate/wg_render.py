@@ -16,6 +16,9 @@ def abstention(decision, conf_pct=None, threshold_pct=None):
     if decision.reason == "no-envelope":
         return ("\U0001f6d1 Holding back - no confidence envelope on a claim; "
                 "not posting unverified info to the war room.")
+    if decision.reason == "empty-body":
+        return ("\U0001f6d1 Holding back - a confidence envelope with no content "
+                "to post; nothing to say to the war room.")
     return ("\U0001f6d1 Holding back - gate error; not posting unverified info to the war room.")
 
 

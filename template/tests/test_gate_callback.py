@@ -50,10 +50,24 @@ def test_high_confidence_grounded_claim_passes_with_badge(tmp_path, monkeypatch)
     assert "⟦" not in out and "88%" in out and "api/pay.py:88" in out
 
 
+def test_envelope_only_empty_body_abstains(tmp_path, monkeypatch):
+    # An envelope with no body is a degenerate (bodiless) claim. The gate must
+    # abstain, not blank the output by returning "" (the chatter-strip path
+    # used to leave an empty string).
+    monkeypatch.setenv("HERMES_HOME", str(_profile(tmp_path)))
+    out = wg_gate.gate(response_text="⟦conf=0.9 grounded=tool missing=none⟧")
+    assert out is not None and out != ""
+    # Honest message, not the misleading generic "gate error" fallthrough.
+    assert "Holding back" in out and "no content" in out
+
+
 def test_never_raises_even_on_internal_bug(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(_profile(tmp_path)))
-    # Force an internal error by monkeypatching decide to blow up.
-    monkeypatch.setattr(wg_gate.wg_policy, "decide", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    # Force an internal error by monkeypatching decide to blow up. A named
+    # function (not a generator-throw lambda) is robust across Python versions.
+    def _boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(wg_gate.wg_policy, "decide", _boom)
     out = wg_gate.gate(response_text="A claim that should error.\n⟦conf=0.9 grounded=tool missing=none⟧")
     assert isinstance(out, str) and "Holding back" in out      # fail closed, no exception
 

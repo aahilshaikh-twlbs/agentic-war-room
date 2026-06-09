@@ -37,6 +37,13 @@ def gate(response_text="", session_id="", model="", platform="", **_):
             return None
 
         env, body = wg_envelope.parse_last_line(response_text)
+        # An envelope with no body is a degenerate (bodiless) claim: the agent
+        # asserted confidence about nothing. Abstain rather than blanking the
+        # output (the chatter-strip path below would return "").
+        if env is not None and not body.strip():
+            decision = wg_policy.Decision(wg_policy.ABSTAIN, "empty-body")
+            wg_audit.log(root, decision, env.conf, "empty-body", response_text)
+            return wg_render.abstention(decision, int(round(env.conf * 100)), cfg["min_confidence"])
         claim = wg_classify.is_claim(body if env is not None else response_text)
 
         if not claim:
