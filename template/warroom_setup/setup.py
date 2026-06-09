@@ -52,16 +52,25 @@ _MB_BEGIN = "# >>> warroom-mailbox >>>"
 _MB_END = "# <<< warroom-mailbox <<<"
 
 
-def _replace_sentinel_block(text, begin, end, new_body):
-    # type: (str, str, str, str) -> str
+def _replace_sentinel_block(text, begin, end, new_body, yaml_key=None):
+    # type: (str, str, str, str, Optional[str]) -> str
     """Replace the region delimited by the `begin`/`end` sentinel LINES with
     `new_body` (which itself includes the begin/end lines), else append it.
 
     Uses an anchored regex (`^begin$ ... ^end$`, MULTILINE|DOTALL) so a sentinel
     string embedded mid-line in some other block's body is NOT matched — only a
-    bare sentinel line on its own. Surrounding text is preserved verbatim. The
-    replacement is supplied via a function to avoid backref interpretation of
-    `\\g`/`\\1` sequences in `new_body`.
+    bare sentinel line on its own. Surrounding text is preserved verbatim.
+
+    Fallback: if the sentinels are absent AND `yaml_key` is supplied, re-anchor
+    onto the bare top-level key span (`^<key>:` line plus its indented/blank
+    continuation lines, up to the next top-level key or EOF) and replace that.
+    This re-sentinels a YAML block whose comments were stripped by a PyYAML
+    re-emit, so a subsequent patch never duplicates `war_room:`/`mailbox:`.
+    The bare header is anchored (`^key:[ \\t]*\\n`) so `mailboxes_other:` does
+    not match `mailbox`. Blank lines that trailed the bare span are preserved as
+    the separator to the next key (else the new block would butt against it).
+    Replacement is spliced by string slicing (not `re.sub`) to avoid backref
+    interpretation of `\\g`/`\\1` sequences in `new_body`.
     """
     pattern = re.compile(
         r"^%s$.*?^%s$" % (re.escape(begin), re.escape(end)),
@@ -69,6 +78,19 @@ def _replace_sentinel_block(text, begin, end, new_body):
     )
     if pattern.search(text):
         return pattern.sub(lambda _m: new_body, text)
+    if yaml_key:
+        bare = re.compile(
+            r"(?m)^%s:[ \t]*\n(?:[ \t].*\n|[ \t]*\n)*" % re.escape(yaml_key)
+        )
+        m = bare.search(text)
+        if m:
+            matched = m.group(0)
+            # Newlines trailing the last content line (>=1) belong between
+            # blocks; re-emit them so the separator to the next key survives.
+            trailing = len(matched) - len(matched.rstrip("\n"))
+            replacement = new_body + ("\n" * trailing if trailing else "\n")
+            replaced = text[:m.start()] + replacement + text[m.end():]
+            return replaced if replaced.endswith("\n") else replaced + "\n"
     if text.strip():
         return text.rstrip("\n") + "\n\n" + new_body + "\n"
     return new_body + "\n"
@@ -194,7 +216,7 @@ def patch_war_room_block(profile_root, board=None, **overrides):
     lines.append(_WR_END)
     block = "\n".join(lines)
 
-    new = _replace_sentinel_block(text, _WR_BEGIN, _WR_END, block)
+    new = _replace_sentinel_block(text, _WR_BEGIN, _WR_END, block, yaml_key="war_room")
     _atomic_write_text(cfg, new)
 
 
@@ -230,7 +252,7 @@ def patch_mailbox_block(profile_root, **overrides):
     lines.append(_MB_END)
     block = "\n".join(lines)
 
-    new = _replace_sentinel_block(text, _MB_BEGIN, _MB_END, block)
+    new = _replace_sentinel_block(text, _MB_BEGIN, _MB_END, block, yaml_key="mailbox")
     _atomic_write_text(cfg, new)
 
 

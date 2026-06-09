@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 
+from . import assimilate as assimilate_mod
 from . import enroll, setup
 from .__init__ import __version__
 
@@ -26,6 +27,23 @@ def _build_parser():
     e.add_argument("--reconfigure", action="store_true", help="force re-write even if already enrolled")
     e.add_argument("--dry-run", dest="dry_run", action="store_true", help="resolve + report; write nothing")
     e.add_argument("--profile-root", dest="profile_root", default=None, help="override profile root")
+
+    a = sub.add_parser("assimilate",
+                       help="wire an existing (foreign) Hermes profile into a war-room board")
+    a.add_argument("profile_root", help="path to the Hermes profile to assimilate")
+    a.add_argument("--board", default="default", help="board name (default: default)")
+    a.add_argument("--label", default=None,
+                   help="board label (default: handle from local/agent.json, else profile dir name)")
+    a.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="resolve + report; write nothing")
+    a.add_argument("--no-walkthrough", dest="no_walkthrough", action="store_true",
+                   help="skip Discord/Slack walkthroughs even if creds are missing")
+    a.add_argument("--reconfigure", action="store_true",
+                   help="force rewrite if already assimilated")
+    a.add_argument("--enforce", action="store_true",
+                   help="opt into confidence-gate enforcement (default off; gentler on existing profiles)")
+    a.add_argument("--yes", action="store_true",
+                   help="headless: suppress the proceed-confirm (needs --no-walkthrough or pre-set creds)")
     return parser
 
 
@@ -75,6 +93,22 @@ def cmd_enroll(args):
     return 0
 
 
+def cmd_assimilate(args):
+    # type: (argparse.Namespace) -> int
+    """Dispatch `warroom assimilate`. Exit codes per assimilate.EXIT_* (0 ok /
+    1 mailbox CLI missing / 2 already assimilated / 3 bad profile / 4 aborted)."""
+    return assimilate_mod.assimilate(
+        Path(args.profile_root),
+        board=args.board,
+        label=args.label,
+        dry_run=args.dry_run,
+        reconfigure=args.reconfigure,
+        no_walkthrough=args.no_walkthrough,
+        enforce=args.enforce,
+        yes=args.yes,
+    )
+
+
 def main(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -90,5 +124,7 @@ def main(argv=None):
             return 130
     if args.cmd == "enroll":
         return cmd_enroll(args)
+    if args.cmd == "assimilate":
+        return cmd_assimilate(args)
     parser.print_help()
     return 2

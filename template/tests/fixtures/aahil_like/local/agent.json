@@ -1,0 +1,8 @@
+{
+  "agent_name": "owner-sh",
+  "handle": "owner-sh",
+  "display_name": "Owner",
+  "model": "opus",
+  "specialist_prefix": "owner-sh",
+  "agent_fingerprint": "owner-sh-placeholder"
+}

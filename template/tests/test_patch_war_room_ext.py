@@ -5,12 +5,29 @@ Backward-compat for the (board, min_confidence, enforce) calling convention is
 also pinned by test_confidence_gate.py and test_gate_wiring.py; this file adds
 the new-key surface.
 """
+import shutil
+from pathlib import Path
+
 from warroom_setup import setup, schema
+
+TEMPLATE_DIR = Path(__file__).resolve().parent.parent
 
 
 def _cfg(tmp_path):
     (tmp_path / "config.yaml").write_text("model: {}\n", encoding="utf-8")
     return tmp_path / "config.yaml"
+
+
+def _key_count(text, key):
+    return sum(1 for ln in text.splitlines() if ln.startswith(key + ":"))
+
+
+def _strip_comment_lines(text):
+    """Mimic Hermes' PyYAML re-emit: every comment line (incl. sentinels) drops,
+    keys + values survive."""
+    return "\n".join(
+        ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
+    ) + "\n"
 
 
 def test_accepts_label_and_role_kwargs(tmp_path):
@@ -71,3 +88,97 @@ def test_still_idempotent_with_new_keys(tmp_path):
     assert text.count(setup._WR_BEGIN) == 1
     assert "board: b2" in text and "b1" not in text
     assert "label: zed2" in text and "label: zed\n" not in text
+
+
+class TestPatchYamlKeyFallback:
+    """Option B: the patchers re-anchor onto a bare top-level key span when a
+    PyYAML re-emit has stripped the sentinel comments, instead of appending a
+    duplicate block. Exercises the shared-core fallback end-to-end via the public
+    patch_*_block entry points (which is what the installer + assimilate call)."""
+
+    def test_war_room_sentinels_intact_in_place_update(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "\n".join([
+                "top: 1",
+                setup._WR_BEGIN, "war_room:", "  board: old", "  min_confidence: 10",
+                setup._WR_END,
+                "bottom: 2",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        setup.patch_war_room_block(tmp_path, "shared", min_confidence=70)
+        text = cfg.read_text(encoding="utf-8")
+        assert _key_count(text, "war_room") == 1
+        assert "board: shared" in text and "board: old" not in text
+        assert "min_confidence: 70" in text
+        assert "top: 1" in text and "bottom: 2" in text
+
+    def test_war_room_sentinels_stripped_block_present_resentineled(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        # Sentinels gone (re-emit), but the war_room: key + body survive.
+        cfg.write_text(
+            "top: 1\n"
+            "war_room:\n"
+            "  enabled: false\n"
+            "  board: old\n"
+            "\n"
+            "bottom: 2\n",
+            encoding="utf-8",
+        )
+        setup.patch_war_room_block(tmp_path, "shared", min_confidence=70)
+        text = cfg.read_text(encoding="utf-8")
+        assert _key_count(text, "war_room") == 1
+        assert setup._WR_BEGIN in text and setup._WR_END in text
+        assert "board: shared" in text and "board: old" not in text
+        # the separator to the next top-level key survived
+        assert "bottom: 2" in text
+
+    def test_war_room_block_absent_appends(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("", encoding="utf-8")
+        setup.patch_war_room_block(tmp_path, "shared")
+        text = cfg.read_text(encoding="utf-8")
+        assert _key_count(text, "war_room") == 1
+        assert setup._WR_BEGIN in text and setup._WR_END in text
+
+    def test_mailbox_re_sentinels_after_simulated_reemit(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        shutil.copy2(TEMPLATE_DIR / "config.yaml", cfg)
+        cfg.write_text(_strip_comment_lines(cfg.read_text(encoding="utf-8")),
+                       encoding="utf-8")
+        assert ">>> warroom-mailbox" not in cfg.read_text(encoding="utf-8")
+        setup.patch_mailbox_block(tmp_path, board="shared", label="alpha-sh")
+        text = cfg.read_text(encoding="utf-8")
+        assert _key_count(text, "mailbox") == 1
+        assert ">>> warroom-mailbox" in text
+        assert "board: shared" in text and "label: alpha-sh" in text
+        # untouched neighbours survive
+        assert _key_count(text, "platform_toolsets") == 1
+        assert "hooks:" in text
+
+    def test_mailbox_lookalike_not_clobbered(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "mailbox:\n  board: old\n  label: x\n"
+            "mailboxes_other:\n  keep: yes\nbottom: 2\n",
+            encoding="utf-8",
+        )
+        setup.patch_mailbox_block(tmp_path, board="shared", label="alpha-sh")
+        text = cfg.read_text(encoding="utf-8")
+        assert _key_count(text, "mailbox") == 1
+        assert "mailboxes_other:" in text and "keep: yes" in text
+        assert ">>> warroom-mailbox" in text
+
+    def test_double_patch_idempotent_after_reemit(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "top: 1\nmailbox:\n  board: old\n  label: x\n\nbottom: 2\n",
+            encoding="utf-8",
+        )
+        # First patch re-anchors onto the bare block; second patch hits sentinels.
+        setup.patch_mailbox_block(tmp_path, board="shared", label="alpha-sh")
+        setup.patch_mailbox_block(tmp_path, board="shared", label="alpha-sh")
+        text = cfg.read_text(encoding="utf-8")
+        assert _key_count(text, "mailbox") == 1
+        assert text.count(setup._MB_BEGIN) == 1 and text.count(setup._MB_END) == 1
