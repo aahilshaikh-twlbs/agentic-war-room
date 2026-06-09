@@ -1,0 +1,112 @@
+"""Feature A — assimilate an existing (foreign) Hermes profile into the war room.
+
+Adds war-room coordination capability to a Hermes profile that was NOT built
+from this template, without clobbering its existing channel wiring, persona,
+hooks, plugins, or skill bundles. The orchestration is composition over
+shared-core (setup.patch_*, enroll.bootstrap, the channel walkthroughs); the
+strictly-new code here is classification + a preserve-don't-clobber driver.
+
+Stdlib only, Python >=3.9. Imports use the `from . import X` form deliberately
+(the package forbids dotted-submodule imports of setup/cli to avoid cycles; see
+test_security.test_no_module_imports_cli_or_setup_except_entrypoints).
+
+T5 surface: classification helpers only (_classify / _detect_channels /
+_already_assimilated). CLI + orchestrator land in later tasks.
+"""
+from pathlib import Path
+
+from . import setup
+
+# Exit-code contract (mirrors enroll's; consumed by the CLI dispatch in T6+).
+EXIT_OK = 0            # assimilated (or dry-run reported cleanly)
+EXIT_CLI_MISSING = 1   # mailbox CLI not found (config written; runtime inactive)
+EXIT_ALREADY = 2       # already assimilated, --reconfigure not passed
+EXIT_BAD_PROFILE = 3   # path invalid / not a Hermes profile
+EXIT_ABORTED = 4       # walkthrough/identity validation failed, owner aborted,
+#                        or an orphan war-room sentinel blocks a safe rewrite
+
+
+def _config_text(profile_root):
+    # type: (Path) -> str
+    cfg = Path(profile_root) / "config.yaml"
+    return cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+
+
+def _has_war_room_sentinel(profile_root):
+    # type: (Path) -> bool
+    """True iff config.yaml carries our exact war-room begin sentinel LINE. The
+    sentinel string is distinctive enough that a substring check is safe."""
+    return setup._WR_BEGIN in _config_text(profile_root)
+
+
+def _has_enroll_state(profile_root):
+    # type: (Path) -> bool
+    return (Path(profile_root) / "local" / "warroom-enroll.json").exists()
+
+
+def _already_assimilated(profile_root):
+    # type: (Path) -> bool
+    """A profile is assimilated only when BOTH the managed war-room sentinel
+    block AND the enroll runtime-state file are present. Sentinel-without-state
+    is an ORPHAN (see _classify), not an assimilated profile."""
+    return _has_war_room_sentinel(profile_root) and _has_enroll_state(profile_root)
+
+
+def _detect_channels(profile_root):
+    # type: (Path) -> dict
+    """Read <profile>/.env (if present) and report which channel bot tokens are
+    already wired, so the orchestrator can skip those walkthroughs. A key present
+    but empty does NOT count as configured."""
+    profile_root = Path(profile_root)
+    env_path = profile_root / ".env"
+    channels = {"discord": False, "slack": False}
+    if not env_path.exists():
+        return channels
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, val = stripped.split("=", 1)
+        key, val = key.strip(), val.strip()
+        if not val:
+            continue
+        if key == "DISCORD_BOT_TOKEN":
+            channels["discord"] = True
+        elif key == "SLACK_BOT_TOKEN":
+            channels["slack"] = True
+    return channels
+
+
+def _classify(profile_root):
+    # type: (Path) -> dict
+    """Classify a candidate assimilate target. Returns a plain dict (the surface
+    is intentionally tiny -- we do not reuse the installer's ProfileInspection
+    dataclass, which lives in a different sys.path root and would couple
+    warroom_setup to scripts/installer).
+
+    Keys:
+      exists               -- profile_root is a directory on disk
+      is_hermes            -- has config.yaml
+      is_awr_template      -- carries the warroom_setup/ package
+      already_assimilated  -- war-room sentinel block AND enroll state present
+      orphan_sentinel      -- sentinel present but enroll state ABSENT. Synthesis
+                              fix (§3 vs §7): this is suspicious -- the
+                              orchestrator refuses with exit 4 instead of
+                              silently rewriting a block it may not own.
+      channels             -- {"discord": bool, "slack": bool} from .env
+      has_persona_decisions-- local/persona/decisions.md exists
+    """
+    profile_root = Path(profile_root)
+    sentinel = _has_war_room_sentinel(profile_root)
+    enrolled = _has_enroll_state(profile_root)
+    return {
+        "exists": profile_root.is_dir(),
+        "is_hermes": (profile_root / "config.yaml").exists(),
+        "is_awr_template": (profile_root / "warroom_setup" / "__init__.py").exists(),
+        "already_assimilated": sentinel and enrolled,
+        "orphan_sentinel": sentinel and not enrolled,
+        "channels": _detect_channels(profile_root),
+        "has_persona_decisions": (
+            profile_root / "local" / "persona" / "decisions.md"
+        ).exists(),
+    }

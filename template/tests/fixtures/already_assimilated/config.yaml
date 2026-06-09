@@ -1,0 +1,10 @@
+# Profile already wired into a war-room board: carries the managed sentinel
+# block AND (alongside) a local/warroom-enroll.json runtime-state file.
+model:
+  name: opus
+# >>> warroom-managed (set via `warroom setup`) >>>
+war_room:
+  enabled: true
+  board: shared
+  label: foreign-sh
+# <<< warroom-managed <<<

@@ -1,0 +1,22 @@
+# Foreign Hermes profile (NOT built from the war-room template). Has its own
+# hooks, plugins, model, and personality -- assimilate must preserve all of it.
+model:
+  name: opus
+slack:
+  require_mention: true
+  allowed_channels: ''
+discord:
+  require_mention: true
+  allowed_channels: ''
+hooks:
+  on_session_start:
+    - command: "bash hooks/foreign_boot.sh"
+hooks_auto_accept: true
+plugins:
+  enabled: true
+personalities:
+  helpful:
+    description: Warm and proactive starter personality.
+    system_prompt_suffix: "Be warm and proactive."
+approvals:
+  mode: manual

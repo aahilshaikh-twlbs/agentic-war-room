@@ -1,0 +1,9 @@
+{
+  "board": "shared",
+  "label": "foreign-sh",
+  "cli_path": null,
+  "mailbox_home": "",
+  "socket_path": "",
+  "last_check_ts": 0,
+  "status": "cli-not-found"
+}

@@ -1,0 +1,12 @@
+# Foreign Hermes profile that already has a Discord bot wired (token in .env).
+# assimilate must detect the existing credential and skip the Discord walkthrough.
+model:
+  name: opus
+discord:
+  require_mention: true
+  allowed_channels: ''
+hooks:
+  on_session_start:
+    - command: "bash hooks/foreign_boot.sh"
+plugins:
+  enabled: true
