@@ -9,6 +9,39 @@ _Shared-core (mailbox routing, Discord/Slack walkthroughs, sanitization guard) a
 ## Prerequisites
 1. Install Hermes Agent (>=0.12): see the Hermes docs. Confirm with `hermes --version`.
 
+## Interactive install (recommended)
+One command runs the whole flow — `hermes profile install`, `.env` + identity,
+`config.yaml` patches, `plugins enable`, and cross-agent enroll — as a single
+TUI:
+```sh
+bash install.sh                       # from a fresh clone of this repo
+```
+It pre-flights your host (Python >=3.9, `hermes` >=0.12, a POSIX terminal, a
+writable `~/.hermes/profiles/`), then walks you through source, profile name,
+channels (the Discord/Slack walkthroughs), the Anthropic key (masked), identity,
+model, and board/label, with a confirmation screen before anything is written.
+It **will modify `~/.claude/settings.json` (mailbox hooks)** — the confirm
+screen says so up front. Pre-flight outcomes are documented in
+`docs/installer-preflight.md`.
+
+Other modes:
+```sh
+bash install.sh --source /path/to/template        # explicit source (local dir or git URL)
+bash install.sh --resume                           # resume an interrupted install
+bash install.sh --verbose                          # tee subprocess output to stderr
+bash install.sh --uninstall alpha-sh               # delete a profile
+bash install.sh --headless --name alpha-sh --source /path/to/template \
+    --board shared --agent-name alpha-sh --display-name "Alpha" \
+    --discord --discord-token-env DISCORD_TOKEN --anthropic-key-env ANTHROPIC_KEY
+```
+Headless reads secrets only from env vars (`--*-token-env` / `--*-key-env`) or
+files (`--*-token-file`) — never as literal flags. A partial install leaves a
+**non-secret** sidecar at `~/.awr/install-state.json` (tokens are never written);
+`--resume` re-prompts for any channel secrets. `--uninstall` warns that the
+`~/.claude/settings.json` mailbox hooks are not auto-removed.
+
+The two-step manual path below still works unchanged.
+
 ## Install
 **Local (this repo / dev):** `distribution.yaml` is at the root of this directory.
 ```sh
