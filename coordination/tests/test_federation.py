@@ -143,3 +143,133 @@ def test_validate_parent_rejects_self_missing_cycle_depth():
     assert "too-deep" in boards_mod.validate_parent(
         deep, "named-extra", "named-l8")
     assert boards_mod.validate_parent(deep, "named-extra", "named-l7") is None
+
+
+# ---------------------------------------------------------------------------
+# T3 — engine topology ops: create_board / set_parent / tree / audit
+# ---------------------------------------------------------------------------
+
+from mailbox import protocol
+from mailbox.engine import MailboxEngine
+
+
+def test_create_board_records_and_persists_parent(engine, clock):
+    assert engine.create_board("org") == {
+        "id": "named-org", "name": "org", "parent": None}
+    res = engine.create_board("team-platform", parent="org")
+    assert res == {"id": "named-team-platform", "name": "team-platform",
+                   "parent": "named-org"}
+    # persisted: a reloaded engine sees the link (meta.json round-trip)
+    reloaded = MailboxEngine(engine.state_dir, now_fn=lambda: clock.t)
+    assert reloaded.boards["named-team-platform"]["parent"] == "named-org"
+
+
+def test_create_board_requires_existing_parent(engine):
+    res = engine.create_board("team-platform", parent="ghost")
+    assert res == {"error": "no-such-board: ghost"}
+    assert "named-team-platform" not in engine.boards   # nothing persisted
+
+
+def test_create_board_is_idempotent_and_can_link_existing(engine):
+    engine.create_board("org")
+    engine.create_board("squad-api")                    # root at first
+    res = engine.create_board("squad-api", parent="org")  # later: link it
+    assert res["parent"] == "named-org"
+    # re-running without parent leaves the link alone
+    res2 = engine.create_board("squad-api")
+    assert res2["parent"] == "named-org"
+
+
+def test_set_parent_reparents_detaches_and_reports_was(engine):
+    engine.create_board("org")
+    engine.create_board("team-platform", parent="org")
+    engine.create_board("squad-api", parent="team-platform")
+    res = engine.set_parent("squad-api", "org")
+    assert res == {"id": "named-squad-api", "parent": "named-org",
+                   "was": "named-team-platform"}
+    res = engine.set_parent("squad-api", detach=True)
+    assert res == {"id": "named-squad-api", "parent": None,
+                   "was": "named-org"}
+
+
+def test_set_parent_rejects_self_cycle_and_missing(engine):
+    engine.create_board("org")
+    engine.create_board("team-platform", parent="org")
+    assert "self-parent" in engine.set_parent("org", "org")["error"]
+    assert "cycle" in engine.set_parent("org", "team-platform")["error"]
+    assert "no-such-board" in engine.set_parent("ghost", "org")["error"]
+    assert "no-such-board" in engine.set_parent("org", "ghost")["error"]
+    # nothing was persisted by the rejected calls
+    assert engine.boards["named-org"].get("parent") is None
+
+
+def test_set_parent_rejects_overdeep_tree(engine):
+    prev = None
+    for i in range(9):                       # named-l0 .. named-l8: depth 0..8
+        name = "l%d" % i
+        res = engine.create_board(name, parent=prev)
+        assert "error" not in res, res
+        prev = name
+    engine.create_board("extra")
+    assert "too-deep" in engine.set_parent("extra", "l8")["error"]
+    assert "error" not in engine.set_parent("extra", "l7")
+
+
+def test_join_ensure_board_preserves_pre_created_parent(engine, tmp_path):
+    # enroll pre-creates the home board with its parent; a later session join
+    # must not clobber the link (_ensure_board early-returns on existing id).
+    engine.create_board("org")
+    engine.create_board("squad-api", parent="org")
+    d = tmp_path / "w"
+    d.mkdir()
+    engine.join(session_id="s1", label="api-sh", cwd=str(d),
+                board_name="squad-api")
+    assert engine.boards["named-squad-api"]["parent"] == "named-org"
+
+
+def test_tree_renders_forest_with_orphans(engine):
+    engine.create_board("org")
+    engine.create_board("team-platform", parent="org")
+    engine.create_board("squad-api", parent="team-platform")
+    engine.create_board("solo")
+    # hand-orphan a board (parent meta gone) — tree degrades gracefully
+    engine.boards["named-lost"] = {"id": "named-lost", "origin": "named:lost",
+                                   "name": "lost", "created": 0.0,
+                                   "parent": "named-ghost"}
+    data = engine.tree()
+    ids = [n["id"] for n in data["roots"]]
+    assert ids == ["named-lost", "named-org", "named-solo"]
+    lost = data["roots"][0]
+    assert lost["orphan"] is True
+    org = data["roots"][1]
+    assert org["orphan"] is False
+    assert [c["id"] for c in org["children"]] == ["named-team-platform"]
+    assert [c["id"] for c in org["children"][0]["children"]] == [
+        "named-squad-api"]
+    # subtree render + bad ref
+    sub = engine.tree(board="team-platform")
+    assert sub["roots"][0]["id"] == "named-team-platform"
+    assert engine.tree(board="ghost") == {"error": "no-such-board: ghost"}
+
+
+def test_topology_mutations_append_audit_log(engine):
+    engine.create_board("org")
+    engine.create_board("team-platform", parent="org")
+    engine.set_parent("team-platform", detach=True)
+    lines = (Path(engine.state_dir) / "federation.log").read_text().splitlines()
+    assert any("create-board id=named-org parent=None" in l for l in lines)
+    assert any("create-board id=named-team-platform parent=named-org" in l
+               for l in lines)
+    assert any("set-parent id=named-team-platform parent=None "
+               "was=named-org" in l for l in lines)
+
+
+def test_dispatch_exposes_topology_ops(engine):
+    resp = protocol.dispatch(engine, {"op": "create_board",
+                                      "args": {"name": "org"}})
+    assert resp["ok"] is True and resp["data"]["id"] == "named-org"
+    resp = protocol.dispatch(engine, {"op": "set_parent",
+                                      "args": {"board": "org", "detach": True}})
+    assert resp["ok"] is True and resp["data"]["parent"] is None
+    resp = protocol.dispatch(engine, {"op": "tree", "args": {}})
+    assert resp["ok"] is True and "roots" in resp["data"]

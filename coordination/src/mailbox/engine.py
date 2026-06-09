@@ -30,14 +30,42 @@ class MailboxEngine:
     def _board_dir(self, board_id):
         return os.path.join(self.state_dir, "boards", board_id)
 
-    def _ensure_board(self, board_id, origin, name=None):
+    def _ensure_board(self, board_id, origin, name=None, parent=None):
         if board_id in self.boards:
             return
         meta = {"id": board_id, "origin": origin, "name": name,
-                "created": self._now()}
+                "created": self._now(), "parent": parent}
         self.boards[board_id] = meta
         store.atomic_write_json(
             os.path.join(self._board_dir(board_id), "meta.json"), meta)
+
+    def _persist_board_meta(self, board_id):
+        store.atomic_write_json(
+            os.path.join(self._board_dir(board_id), "meta.json"),
+            self.boards[board_id])
+
+    def _resolve_board_ref(self, ref):
+        """Resolve an operator-supplied board reference to a known board id:
+        an exact id first (named-/repo-/cwd-), else the named-board id for
+        the bare name. None when nothing matches."""
+        if ref is None:
+            return None
+        if ref in self.boards:
+            return ref
+        named = boards_mod.board_id_for_name(ref)
+        if named in self.boards:
+            return named
+        return None
+
+    def _audit_federation(self, line):
+        """Append one line to <state_dir>/federation.log. This is an
+        append-only audit log, not a state record — the atomic temp+replace
+        rule applies to records; logs append (same idiom as the enroll/gate
+        logs on the template side)."""
+        os.makedirs(self.state_dir, exist_ok=True)
+        path = os.path.join(self.state_dir, "federation.log")
+        with open(path, "a") as fh:
+            fh.write("%.3f %s\n" % (self._now(), line))
 
     def _persist_presence(self, p):
         store.atomic_write_json(
@@ -157,6 +185,96 @@ class MailboxEngine:
 
         return {"boards": board_list, "colocated": colocated,
                 "label": label}
+
+    # ----- topology (multi-board federation) -----
+    def create_board(self, name, parent=None):
+        """Mint (or reuse) the named board for `name`; optionally link it
+        under an EXISTING parent (operators build top-down). Validation per
+        boards.validate_parent; errors are returned as {"error": ...} and
+        never persisted."""
+        board_id = boards_mod.board_id_for_name(name)
+        parent_id = None
+        if parent is not None:
+            parent_id = self._resolve_board_ref(parent)
+            if parent_id is None:
+                return {"error": "no-such-board: " + str(parent)}
+        if board_id not in self.boards:
+            self._ensure_board(board_id, "named:" + name, name=name)
+        if parent_id is not None:
+            err = boards_mod.validate_parent(self.boards, board_id, parent_id)
+            if err:
+                return {"error": err}
+            self.boards[board_id]["parent"] = parent_id
+            self._persist_board_meta(board_id)
+        self._audit_federation(
+            "create-board id=%s parent=%s" % (board_id, parent_id))
+        meta = self.boards[board_id]
+        return {"id": board_id, "name": meta.get("name"),
+                "parent": meta.get("parent")}
+
+    def set_parent(self, board, parent=None, detach=False):
+        """Re-parent `board` under `parent` (cycle/depth-validated), or
+        detach it into a root. Both refs accept a board id or a bare name."""
+        board_id = self._resolve_board_ref(board)
+        if board_id is None:
+            return {"error": "no-such-board: " + str(board)}
+        was = self.boards[board_id].get("parent")
+        if detach:
+            self.boards[board_id]["parent"] = None
+            self._persist_board_meta(board_id)
+            self._audit_federation(
+                "set-parent id=%s parent=None was=%s" % (board_id, was))
+            return {"id": board_id, "parent": None, "was": was}
+        parent_id = self._resolve_board_ref(parent)
+        if parent_id is None:
+            return {"error": "no-such-board: " + str(parent)}
+        err = boards_mod.validate_parent(self.boards, board_id, parent_id)
+        if err:
+            return {"error": err}
+        self.boards[board_id]["parent"] = parent_id
+        self._persist_board_meta(board_id)
+        self._audit_federation(
+            "set-parent id=%s parent=%s was=%s" % (board_id, parent_id, was))
+        return {"id": board_id, "parent": parent_id, "was": was}
+
+    # ----- tree -----
+    def tree(self, board=None):
+        """Topology render data: {"roots": [node...]}; node = {"id", "name",
+        "orphan", "children": [...]}. A board whose parent id has no meta is
+        surfaced as an orphan root (spec: degrade gracefully). Cycle-safe via
+        a visited set."""
+        if board is not None:
+            root_id = self._resolve_board_ref(board)
+            if root_id is None:
+                return {"error": "no-such-board: " + str(board)}
+            root_ids = [root_id]
+            orphans = set()
+        else:
+            root_ids = []
+            orphans = set()
+            for bid in sorted(self.boards):
+                parent = self.boards[bid].get("parent")
+                if not parent:
+                    root_ids.append(bid)
+                elif parent not in self.boards:
+                    root_ids.append(bid)
+                    orphans.add(bid)
+
+        seen = set()
+
+        def _node(bid):
+            seen.add(bid)
+            meta = self.boards.get(bid, {})
+            children = []
+            for cid in sorted(self.boards):
+                if cid in seen:
+                    continue
+                if self.boards[cid].get("parent") == bid:
+                    children.append(_node(cid))
+            return {"id": bid, "name": meta.get("name"),
+                    "orphan": bid in orphans, "children": children}
+
+        return {"roots": [_node(r) for r in root_ids]}
 
     # ----- heartbeat -----
     def heartbeat(self, session_id):
