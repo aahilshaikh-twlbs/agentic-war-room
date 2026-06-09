@@ -75,6 +75,25 @@ empty `channel_directory.json` / `memories/*.md` skeletons are the safe defaults
 - The SHIPPED `template/config.yaml` MUST have `label: ""` in the `mailbox:`
   block. The wizard populates it in the installed `<profile>/config.yaml` only.
 
+## Interactive installer (`scripts/installer/`)
+
+The installer ships in the public template, so the same rules apply to it:
+
+- `sanitize_check.py` walks `scripts/` by default (it is **not** in
+  `EXCLUDE_DIRS`), so every installer module, the vendored `_substrate/` copies,
+  and `SMOKE.md` are scanned on each run. Examples in installer source, tests,
+  and `SMOKE.md` use the neutral handles `alpha-sh` / `beta-sh` / board `shared`.
+- **`install.log` carries no secrets.** The orchestrator logs stage names and the
+  install/enable command lines (which contain only source + profile name), never
+  token or key values. Stage 2 logs a count of `.env` keys, not their values.
+- **The resume sidecar (`~/.awr/install-state.json`) excludes secrets.** Keys
+  whose name contains `token` / `key` / `secret` / `password` / `cred` are
+  stripped before write; on resume, channel tokens are re-prompted (never read
+  from disk).
+- **Installer imports are restricted to stdlib + the vendored `_substrate.*`.**
+  The bundled `warroom_setup` is imported only lazily, post-install, from the
+  *installed profile* (the in-process orchestration step) — never at module load.
+
 ## Persona content to strip on auto-copy
 
 - `SOUL.md` sections matching `^## With ` (peer-by-name sections).
