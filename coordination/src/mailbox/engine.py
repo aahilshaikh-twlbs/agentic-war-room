@@ -1,3 +1,4 @@
+import hashlib
 import os
 import time
 import uuid
@@ -568,7 +569,9 @@ class MailboxEngine:
         return {"seized": seized, "claim": claim}
 
     # ----- send -----
-    def send(self, session_id, to, kind, body, ref_paths=None):
+    def send(self, session_id, to, kind, body, ref_paths=None, scope="local"):
+        if scope not in ("local", "escalate", "broadcast"):
+            return {"error": "bad-scope: " + str(scope)}
         presence = self.presence.get(session_id)
         if presence is None:
             return {"error": "no presence for session"}
@@ -584,10 +587,42 @@ class MailboxEngine:
             created=self._now(),
             read_by=[],
             ref_paths=list(ref_paths) if ref_paths else [],
+            scope=scope,
         )
         self.messages[msg.id] = msg
         self._persist_message(msg)
+        if scope != "local":
+            body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()[:8]
+            self._audit_federation(
+                "send scope=%s board=%s from=%s body_sha=%s"
+                % (scope, board, presence.label, body_sha))
         return {"id": msg.id}
+
+    # ----- federated reads (multi-board federation) -----
+    def federated_messages(self, board_id):
+        """Read-time federation (spec §3): own messages (any scope), plus
+        escalations from descendants, plus broadcasts from ancestors. Pure
+        filter over the in-RAM message dict; each row is annotated with its
+        origin board and direction ("local" | "up" | "down") so a renderer
+        can show 'escalated from squad-api' / 'broadcast from org'."""
+        anc = set(boards_mod.ancestors(self.boards, board_id))
+        desc = set(boards_mod.descendants(self.boards, board_id))
+        out = []
+        for m in self.messages.values():
+            if m.board == board_id:
+                direction = "local"
+            elif m.board in desc and m.scope == "escalate":
+                direction = "up"
+            elif m.board in anc and m.scope == "broadcast":
+                direction = "down"
+            else:
+                continue
+            d = m.to_dict()
+            d["origin_board"] = m.board
+            d["direction"] = direction
+            out.append(d)
+        out.sort(key=lambda d: d["created"])
+        return out
 
     # ----- poll_inbox -----
     def poll_inbox(self, session_id):

@@ -273,3 +273,102 @@ def test_dispatch_exposes_topology_ops(engine):
     assert resp["ok"] is True and resp["data"]["parent"] is None
     resp = protocol.dispatch(engine, {"op": "tree", "args": {}})
     assert resp["ok"] is True and "roots" in resp["data"]
+
+
+# ---------------------------------------------------------------------------
+# T4 — send scope + federated_messages (read-time resolution, the core)
+# ---------------------------------------------------------------------------
+
+import hashlib
+
+
+def _setup_tree(engine, tmp_path):
+    """org -> team-platform -> {squad-api, squad-web}; one session per board,
+    each with a DISTINCT cwd (so repo boards never overlap)."""
+    engine.create_board("org")
+    engine.create_board("team-platform", parent="org")
+    engine.create_board("squad-api", parent="team-platform")
+    engine.create_board("squad-web", parent="team-platform")
+    sessions = [
+        ("s_org", "org-sh", "org"),
+        ("s_team", "team-sh", "team-platform"),
+        ("s_api", "api-sh", "squad-api"),
+        ("s_web", "web-sh", "squad-web"),
+    ]
+    for i, (sid, label, board) in enumerate(sessions):
+        d = tmp_path / ("cwd%d" % i)
+        d.mkdir(exist_ok=True)
+        engine.join(session_id=sid, label=label, cwd=str(d), board_name=board)
+
+
+def test_send_persists_scope_and_validates(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    res = engine.send(session_id="s_api", to="*", kind="note",
+                      body="incident", scope="escalate")
+    assert res["id"].startswith("msg_")
+    assert engine.messages[res["id"]].scope == "escalate"
+    assert engine.messages[res["id"]].board == "named-squad-api"
+    assert engine.send(session_id="s_api", to="*", kind="note",
+                       body="x", scope="sideways") == {
+        "error": "bad-scope: sideways"}
+
+
+def test_federated_messages_own_up_down(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.send(session_id="s_api", to="*", kind="note", body="api local")
+    engine.send(session_id="s_api", to="*", kind="note",
+                body="api incident", scope="escalate")
+    engine.send(session_id="s_org", to="*", kind="note",
+                body="org announcement", scope="broadcast")
+
+    team = engine.federated_messages("named-team-platform")
+    bodies = {m["body"]: m for m in team}
+    assert "api local" not in bodies                  # local stays local
+    up = bodies["api incident"]
+    assert up["direction"] == "up"
+    assert up["origin_board"] == "named-squad-api"
+    down = bodies["org announcement"]
+    assert down["direction"] == "down"
+    assert down["origin_board"] == "named-org"
+
+    org = engine.federated_messages("named-org")
+    org_bodies = {m["body"]: m for m in org}
+    assert "api incident" in org_bodies               # transitive escalation
+    assert org_bodies["org announcement"]["direction"] == "local"
+
+    api = engine.federated_messages("named-squad-api")
+    api_bodies = {m["body"]: m for m in api}
+    assert api_bodies["api local"]["direction"] == "local"
+    assert api_bodies["org announcement"]["direction"] == "down"
+
+
+def test_federated_messages_siblings_invisible(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.send(session_id="s_api", to="*", kind="note",
+                body="api incident", scope="escalate")
+    web = engine.federated_messages("named-squad-web")
+    assert all(m["body"] != "api incident" for m in web)
+
+
+def test_federated_messages_root_leaf_degenerate(engine, tmp_path):
+    engine.create_board("solo")
+    d = tmp_path / "solo"
+    d.mkdir()
+    engine.join(session_id="s_solo", label="solo-sh", cwd=str(d),
+                board_name="solo")
+    engine.send(session_id="s_solo", to="*", kind="note", body="hi",
+                scope="escalate")
+    rows = engine.federated_messages("named-solo")
+    assert [m["body"] for m in rows if m["board"] == "named-solo"] == ["hi"]
+    assert rows[-1]["direction"] == "local"           # own board, any scope
+
+
+def test_escalate_audit_logs_sha_never_body(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.send(session_id="s_api", to="*", kind="note",
+                body="secret-incident-details", scope="escalate")
+    text = (Path(engine.state_dir) / "federation.log").read_text()
+    assert "send scope=escalate board=named-squad-api from=api-sh" in text
+    assert "secret-incident-details" not in text
+    sha = hashlib.sha256(b"secret-incident-details").hexdigest()[:8]
+    assert "body_sha=" + sha in text
