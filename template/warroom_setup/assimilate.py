@@ -167,16 +167,15 @@ def _report(info, profile_root, board, label, out, dry_run=False):
 
 def assimilate(profile_root, *, board="default", label=None, dry_run=False,
                reconfigure=False, no_walkthrough=False, enforce=False,
-               yes=False, env=None, out=None, prompts=None):
+               yes=False, env=None, out=None, prompts=None, in_stream=None):
     # type: (...) -> int
     """Orchestrate assimilation of a foreign Hermes profile. Returns an exit code
     per the EXIT_* contract.
 
-    T6 milestone: classification short-circuits (exit 3/2/4 + awr-template
-    redirect) + identity resolution + pre-flight report. The walkthrough / patch
-    / enroll steps land in T7-T9; until then a non-dry-run live call reports and
-    returns 0 without writing (the "report-only" handler the build order
-    specifies for this task).
+    Flow: classify (exit 3/2/4 + awr-template redirect) -> resolve label ->
+    pre-flight report -> proceed-confirm (unless --yes/--dry-run) -> patch
+    war_room (5a) + persona (5b). The walkthrough .env merge (5c/5d) and
+    enroll.bootstrap + audit trail (T9) extend the patch section in later tasks.
     """
     out = out if out is not None else sys.stdout
     profile_root = Path(profile_root)
@@ -197,10 +196,10 @@ def assimilate(profile_root, *, board="default", label=None, dry_run=False,
         out.write("assimilate: this is a war-room template profile; use "
                   "`warroom setup` / `warroom enroll --reconfigure` instead\n")
         return EXIT_OK
-    if info["orphan_sentinel"]:
+    if info["orphan_sentinel"] and not reconfigure:
         out.write("assimilate: config.yaml carries a war-room sentinel block but "
                   "this profile was never enrolled (no local/warroom-enroll.json); "
-                  "manual review required\n")
+                  "manual review required (pass --reconfigure to force a rewrite)\n")
         return EXIT_ABORTED
     if info["already_assimilated"] and not reconfigure:
         out.write("assimilate: already assimilated (use --reconfigure to force "
@@ -222,5 +221,34 @@ def assimilate(profile_root, *, board="default", label=None, dry_run=False,
     if dry_run:
         return EXIT_OK
 
-    # 4-5: walkthroughs + patches + enroll land in T7-T9.
+    # 4. Proceed-confirm (interactive unless --yes).
+    if not yes:
+        stream = in_stream if in_stream is not None else sys.stdin
+        out.write("Proceed? [y/N] ")
+        try:
+            out.flush()
+        except Exception:  # pragma: no cover - StringIO has flush; guard real fds
+            pass
+        resp = (stream.readline() or "").strip().lower()
+        if resp not in ("y", "yes"):
+            out.write("assimilate: aborted by operator (no changes written)\n")
+            return EXIT_ABORTED
+
+    # 5. Patches (atomic, preserve-don't-clobber).
+    #    5a. war_room block. enforce defaults OFF -- gentler on an existing
+    #        operator's outputs at first contact; --enforce opts in.
+    setup.patch_war_room_block(profile_root, board, label=resolved_label,
+                               enforce=enforce)
+    #    5b. persona rule: idempotent append inside the runtime sentinel region;
+    #        never clobbers the operator's own decisions.md content.
+    setup.patch_persona_decisions(profile_root, setup._WARROOM_PERSONA_RULE,
+                                  sentinel_id="warroom-runtime")
+    # 5c/5d (walkthrough .env merge) + enroll.bootstrap + 5e (audit trail) land
+    # in T8-T9.
+
+    # 6. Post-flight summary.
+    out.write("\nAssimilated %s. Next:\n" % profile_root)
+    out.write("  - Restart this Claude session so MAILBOX_BOARD/LABEL load into env.\n")
+    out.write("  - Run `mailbox ps` to see your peer.\n")
+    out.write("  - Re-run with --reconfigure to change the board or label.\n")
     return EXIT_OK
