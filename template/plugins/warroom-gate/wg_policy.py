@@ -11,7 +11,7 @@ ABSTAIN = "abstain"
 @dataclass
 class Decision:
     action: str          # PASS | ABSTAIN
-    reason: str          # chatter | ok | no-envelope | ungrounded | below-threshold | internal-error
+    reason: str          # chatter | ok | no-envelope | ungrounded | below-threshold | empty-body | internal-error
     missing: str = ""
 
 
