@@ -1,0 +1,43 @@
+# Personal Hermes profile (SYNTHESIZED; structurally like an operator's own
+# profile, NOT a copy of any real one). No warroom_setup/ package, no war_room:
+# or mailbox: sentinel blocks -- a genuine foreign assimilate target.
+model:
+  provider: anthropic
+  name: opus
+slack:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  channel_prompts: {}
+discord:
+  require_mention: false
+  auto_thread: true
+  history_backfill: true
+  channel_prompts: {}
+hooks:
+  on_session_start:
+    - command: "bash hooks/boot.sh"
+    - command: "bash hooks/load_context.sh"
+  on_message:
+    - command: "bash hooks/notify.sh"
+hooks_auto_accept: true
+plugins:
+  enabled: true
+  installed:
+    - own-notes
+    - own-search
+personalities:
+  default:
+    description: The operator's own register.
+    system_prompt_suffix: "Speak plainly. Cite sources."
+platform_toolsets:
+  cli:
+  - browser
+  - file
+  - terminal
+approvals:
+  mode: manual
+cron_mode: deny
+security:
+  tirith_enabled: true
+redact_secrets: true
