@@ -20,7 +20,6 @@ Stdlib only, Python >=3.9.
 """
 from __future__ import annotations
 
-import re
 import sys
 import time
 import uuid
@@ -35,8 +34,9 @@ import subprocess_runner
 # BEFORE the in-process YAML patches (Stages 4/5) because Hermes re-emits
 # config.yaml via PyYAML, which strips ALL comments (including the warroom-managed
 # / warroom-mailbox sentinels). Running it first means the only re-emit happens
-# while no freshly-written sentinels are on disk; Stage 4 then normalizes any
-# orphaned bare block and writes the canonical sentinel-bounded copy.
+# while no freshly-written sentinels are on disk; Stage 4 then re-anchors onto any
+# orphaned bare block via shared-core's _replace_sentinel_block YAML-key fallback
+# (Option B) and writes the canonical sentinel-bounded copy.
 STAGE_LABELS = {
     1: "hermes profile install",
     2: "plugins enable warroom-gate",
@@ -46,12 +46,6 @@ STAGE_LABELS = {
 }
 
 _LOG_CAP_BYTES = 1_000_000  # K14: 1MB cap
-
-# Top-level config.yaml keys we manage, with their sentinel begin-marker.
-_MANAGED_BLOCKS = {
-    "war_room": ">>> warroom-managed",
-    "mailbox": ">>> warroom-mailbox",
-}
 
 
 @dataclass
@@ -165,52 +159,6 @@ def _env_values_from_answers(answers) -> dict:
         if sc.channel_id:
             env["SLACK_HOME_CHANNEL"] = sc.channel_id
     return env
-
-
-# --------------------------------------------------------------------------- #
-# config.yaml sentinel normalization (Stage 4 pre-patch)
-# --------------------------------------------------------------------------- #
-def _strip_bare_block(text: str, key: str) -> str:
-    """Remove a top-level ``key:`` block: the header line plus its indented/blank
-    continuation lines, up to (not including) the next top-level key or EOF.
-    Anchored on a bare mapping header (``^key:$``) so ``mailboxes_other:`` does
-    NOT match ``mailbox``."""
-    pat = re.compile(
-        r"(?m)^%s:[ \t]*\n(?:[ \t].*\n|[ \t]*\n)*" % re.escape(key)
-    )
-    return pat.sub("", text)
-
-
-def normalize_unsentineled_blocks(config_path: Path) -> bool:
-    """Drop an ORPHANED bare managed block before re-patching.
-
-    Hermes' ``plugins enable`` re-emits config.yaml via PyYAML, which strips all
-    comments -- including our ``warroom-managed`` / ``warroom-mailbox`` sentinel
-    lines. The shipped template already carries sentinel-bounded ``war_room:`` /
-    ``mailbox:`` blocks, so after a re-emit those keys survive but their
-    sentinels do not. ``setup._replace_sentinel_block`` appends-on-missing, so a
-    subsequent ``patch_*_block`` would create a DUPLICATE key. This strips the
-    bare (sentinel-less) block first so the patch writes a single canonical
-    sentinel-bounded copy. No-op when the sentinels are intact.
-
-    FOLLOW-UP: the principled fix is a YAML-key fallback inside shared-core's
-    ``setup._replace_sentinel_block``; when that lands this normalize step becomes
-    a no-op and can be removed. Returns True if anything was stripped.
-    """
-    cfg = Path(config_path)
-    if not cfg.exists():
-        return False
-    text = cfg.read_text(encoding="utf-8")
-    changed = False
-    for key, sentinel in _MANAGED_BLOCKS.items():
-        has_sentinel = sentinel in text
-        has_bare_key = re.search(r"(?m)^%s:[ \t]*$" % re.escape(key), text) is not None
-        if not has_sentinel and has_bare_key:
-            text = _strip_bare_block(text, key)
-            changed = True
-    if changed:
-        cfg.write_text(text, encoding="utf-8")
-    return changed
 
 
 # --------------------------------------------------------------------------- #
@@ -339,10 +287,10 @@ def execute(
         result.completed_stages.append(3)
 
         # ---- Stage 4: war_room + mailbox blocks ----------------------------
-        # Normalize first: if plugins-enable's re-emit orphaned a sentinel-less
-        # war_room:/mailbox: block, strip it so patch_*_block writes a single
-        # canonical sentinel-bounded copy instead of appending a duplicate.
-        normalize_unsentineled_blocks(profile_root / "config.yaml")
+        # If plugins-enable's re-emit orphaned a sentinel-less war_room:/mailbox:
+        # block, shared-core's _replace_sentinel_block re-anchors onto the bare
+        # key span and rewrites a single canonical sentinel-bounded copy (Option
+        # B); no installer-side normalize pass is needed.
         mods.setup.patch_war_room_block(
             profile_root, answers.board, min_confidence=answers.min_confidence
         )
