@@ -6,6 +6,7 @@ _already_assimilated). No CLI reachability yet.
 import hashlib
 import io
 import shutil
+import stat
 from pathlib import Path
 
 from warroom_setup import assimilate, cli, setup
@@ -14,15 +15,46 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FOREIGN = FIXTURES / "foreign_profile"
 FOREIGN_DISCORD = FIXTURES / "foreign_profile_with_discord"
 ALREADY = FIXTURES / "already_assimilated"
+FAKE_MAILBOX = FIXTURES / "fake_mailbox_bin.sh"
+
+# Files that legitimately change on every run (timestamps / appended log) and so
+# are excluded from byte-identical idempotency comparisons.
+_VOLATILE = {
+    "local/warroom-enroll.json",
+    "local/warroom-enroll.log",
+    "local/warroom-assimilate.json",
+}
 
 
-def _hash_tree(root):
+def _hash_tree(root, exclude=()):
     root = Path(root)
     out = {}
     for p in sorted(root.rglob("*")):
         if p.is_file():
-            out[str(p.relative_to(root))] = hashlib.sha256(p.read_bytes()).hexdigest()
+            rel = str(p.relative_to(root))
+            if rel in exclude:
+                continue
+            out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
     return out
+
+
+def _env_with_cli(base, with_cli=True):
+    """Mirror test_enroll_bootstrap._env_with_cli: an env where HOME -> tmp (so
+    the real ~/.claude is never touched) and, optionally, a discoverable fake
+    `mailbox` CLI so enroll.bootstrap returns status='ok'. Created OUTSIDE the
+    profile dir so it never pollutes a profile hash."""
+    base = Path(base)
+    home = base / "_home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    env = {"HOME": str(home), "PATH": ""}
+    if with_cli:
+        mh = base / "_mhome"
+        mh.mkdir(exist_ok=True)
+        dst = mh / "mailbox"
+        shutil.copy2(FAKE_MAILBOX, dst)
+        dst.chmod(dst.stat().st_mode | stat.S_IXUSR)
+        env["MAILBOX_HOME"] = str(mh)
+    return env
 
 
 # --------------------------------------------------------------------------- #
@@ -173,6 +205,7 @@ def _live(prof, **kw):
     kw.setdefault("board", "shared")
     kw.setdefault("label", "beta-sh")
     kw.setdefault("out", io.StringIO())
+    kw.setdefault("env", _env_with_cli(Path(prof).parent))
     return assimilate.assimilate(prof, **kw)
 
 
@@ -217,9 +250,11 @@ def test_assimilate_idempotent_with_reconfigure(tmp_path):
     prof = tmp_path / "prof"
     shutil.copytree(FOREIGN, prof)
     _live(prof, reconfigure=True)
-    after_first = _hash_tree(prof)
+    after_first = _hash_tree(prof, exclude=_VOLATILE)
     _live(prof, reconfigure=True)
-    assert _hash_tree(prof) == after_first  # zero content diff on re-run
+    # config.yaml / .env / decisions.md are byte-identical on re-run; only the
+    # runtime-state + audit files (timestamps / log) legitimately differ.
+    assert _hash_tree(prof, exclude=_VOLATILE) == after_first
 
 
 def test_assimilate_refuses_repeat_without_reconfigure(tmp_path):
@@ -287,7 +322,8 @@ def test_assimilate_confirm_yes_proceeds(tmp_path):
     out = io.StringIO()
     rc = assimilate.assimilate(prof, board="shared", label="beta-sh",
                                no_walkthrough=True, yes=False,
-                               in_stream=io.StringIO("y\n"), out=out)
+                               in_stream=io.StringIO("y\n"), out=out,
+                               env=_env_with_cli(tmp_path))
     assert rc == 0
     assert setup._WR_BEGIN in (prof / "config.yaml").read_text(encoding="utf-8")
 
@@ -312,7 +348,8 @@ def test_assimilate_no_walkthrough_skips_both(tmp_path):
     out = io.StringIO()
     rc = assimilate.assimilate(prof, board="shared", label="beta-sh",
                                no_walkthrough=True, yes=True,
-                               prompts=_boom_prompts, out=out)
+                               prompts=_boom_prompts, out=out,
+                               env=_env_with_cli(tmp_path))
     assert rc == 0
     assert "war-room will be CLI-only" in out.getvalue()
 
@@ -325,7 +362,8 @@ def test_assimilate_skips_walkthrough_when_both_creds_present(tmp_path):
         "DISCORD_BOT_TOKEN=x\nSLACK_BOT_TOKEN=y\n", encoding="utf-8")
     out = io.StringIO()
     rc = assimilate.assimilate(prof, board="shared", label="beta-sh",
-                               yes=True, prompts=_boom_prompts, out=out)
+                               yes=True, prompts=_boom_prompts, out=out,
+                               env=_env_with_cli(tmp_path))
     assert rc == 0  # both channels present -> no walkthrough invoked
 
 
@@ -337,6 +375,7 @@ def test_assimilate_skips_discord_walkthrough_when_token_present(tmp_path, monke
     out = io.StringIO()
     rc = assimilate.assimilate(
         prof, board="shared", label="beta-sh", yes=True, out=out,
+        env=_env_with_cli(tmp_path),
         prompts=_fake_prompts({2: "slack-app", 4: "slack-bot", 6: "slack-chan"}))
     assert rc == 0
     env = (prof / ".env").read_text(encoding="utf-8")
@@ -350,6 +389,7 @@ def test_assimilate_collects_creds_and_writes_env(tmp_path):
     out = io.StringIO()
     rc = assimilate.assimilate(
         prof, board="shared", label="beta-sh", yes=True, out=out,
+        env=_env_with_cli(tmp_path),
         prompts=_fake_prompts({2: "disc-tok", 4: "slack-bot",
                                5: "disc-chan", 6: "slack-chan"}))
     assert rc == 0
@@ -374,7 +414,8 @@ def test_assimilate_no_walkthrough_no_creds_warns_but_proceeds(tmp_path):
     shutil.copytree(FOREIGN, prof)
     out = io.StringIO()
     rc = assimilate.assimilate(prof, board="shared", label="beta-sh",
-                               no_walkthrough=True, yes=True, out=out)
+                               no_walkthrough=True, yes=True, out=out,
+                               env=_env_with_cli(tmp_path))
     assert rc == 0
     assert "channels: none configured; war-room will be CLI-only" in out.getvalue()
 
@@ -389,3 +430,83 @@ def test_default_prompts_collects_and_skips_optional():
     assert creds.bot_token == token
     assert creds.channel_id == "12345678901234567"
     assert creds.second_channel_id == ""
+
+
+# --------------------------------------------------------------------------- #
+# T9 -- enroll.bootstrap call + audit trail
+# --------------------------------------------------------------------------- #
+import json as _json  # noqa: E402
+
+
+def test_assimilate_calls_enroll_bootstrap_writes_state(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)
+    rc = _live(prof)
+    assert rc == 0
+    enroll_state = prof / "local" / "warroom-enroll.json"
+    assert enroll_state.is_file()
+    cfg = (prof / "config.yaml").read_text(encoding="utf-8")
+    assert setup._MB_BEGIN in cfg  # mailbox: block written by bootstrap
+    env = (prof / ".env").read_text(encoding="utf-8")
+    assert "MAILBOX_BOARD=shared" in env and "MAILBOX_LABEL=beta-sh" in env
+
+
+def test_assimilate_persists_audit_trail(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)
+    _live(prof)
+    audit_path = prof / "local" / "warroom-assimilate.json"
+    assert audit_path.is_file()
+    audit = _json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit["board"] == "shared" and audit["label"] == "beta-sh"
+    assert "channels_walked_through" in audit
+    assert "timestamp" in audit and audit["timestamp"].endswith("+00:00")
+    assert audit["enroll_status"] == "ok"
+
+
+def test_assimilate_audit_records_channels_walked(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)
+    assimilate.assimilate(
+        prof, board="shared", label="beta-sh", yes=True, out=io.StringIO(),
+        env=_env_with_cli(tmp_path),
+        prompts=_fake_prompts({2: "d", 4: "sb", 5: "dc", 6: "sc"}))
+    audit = _json.loads(
+        (prof / "local" / "warroom-assimilate.json").read_text(encoding="utf-8"))
+    assert audit["channels_walked_through"] == ["discord", "slack"]
+
+
+def test_assimilate_fail_warn_when_mailbox_cli_absent(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)
+    out = io.StringIO()
+    rc = assimilate.assimilate(
+        prof, board="shared", label="beta-sh", yes=True, no_walkthrough=True,
+        out=out, env=_env_with_cli(tmp_path, with_cli=False))
+    assert rc == 1  # cli-not-found
+    # the war_room block is still written (config written, runtime inactive)
+    assert setup._WR_BEGIN in (prof / "config.yaml").read_text(encoding="utf-8")
+    assert "mailbox CLI not found" in out.getvalue()
+
+
+def test_assimilate_creds_persisted_before_bootstrap_failure(tmp_path, monkeypatch):
+    # Synthesis fix: walkthrough creds hit .env BEFORE enroll.bootstrap, so a
+    # bootstrap blow-up never strands a freshly-collected token.
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)
+
+    def boom(*a, **k):
+        raise RuntimeError("bootstrap exploded")
+
+    monkeypatch.setattr(assimilate.enroll, "bootstrap", boom)
+    try:
+        assimilate.assimilate(
+            prof, board="shared", label="beta-sh", yes=True, out=io.StringIO(),
+            env=_env_with_cli(tmp_path),
+            prompts=_fake_prompts({2: "disc-tok", 4: "slack-bot",
+                                   5: "dc", 6: "sc"}))
+    except RuntimeError:
+        pass
+    env = (prof / ".env").read_text(encoding="utf-8")
+    assert "DISCORD_BOT_TOKEN=disc-tok" in env  # persisted before the failure
+    assert "SLACK_BOT_TOKEN=slack-bot" in env

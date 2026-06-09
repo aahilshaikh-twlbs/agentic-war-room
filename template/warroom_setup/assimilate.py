@@ -15,10 +15,18 @@ _already_assimilated). CLI + orchestrator land in later tasks.
 """
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import discord_walkthrough, setup, slack_walkthrough, validators
+from . import discord_walkthrough, enroll, runtime_state, setup
+from . import slack_walkthrough, validators
+
+
+def _utc_now_iso():
+    # type: () -> str
+    """ISO-8601 UTC timestamp for the assimilate audit trail."""
+    return datetime.now(timezone.utc).isoformat()
 
 # Exit-code contract (mirrors enroll's; consumed by the CLI dispatch in T6+).
 EXIT_OK = 0            # assimilated (or dry-run reported cleanly)
@@ -198,17 +206,20 @@ def _default_prompts(in_stream, out, max_retries=3):
 
 
 def _run_walkthroughs(info, no_walkthrough, yes, prompts, in_stream, out):
-    # type: (dict, bool, bool, object, object, object) -> Optional[dict]
+    # type: (dict, bool, bool, object, object, object) -> tuple
     """Conditionally run the Discord/Slack walkthroughs for channels whose creds
-    are NOT already wired, and return the collected .env values to merge. Returns
-    None to signal a headless usage error (caller maps to exit 4). Channels that
-    already have creds (info["channels"]) are skipped to preserve existing wiring.
+    are NOT already wired. Returns `(creds_env, walked)` where creds_env is the
+    dict of .env values to merge and walked is the list of channel names a
+    walkthrough was run for. Returns `(None, None)` to signal a headless usage
+    error (caller maps to exit 4). Channels that already have creds
+    (info["channels"]) are skipped to preserve existing wiring.
     """
     needs_discord = not info["channels"]["discord"]
     needs_slack = not info["channels"]["slack"]
     creds_env = {}  # type: dict
+    walked = []  # type: list
     if no_walkthrough or not (needs_discord or needs_slack):
-        return creds_env
+        return creds_env, walked
 
     driver = prompts
     if driver is None:
@@ -216,7 +227,7 @@ def _run_walkthroughs(info, no_walkthrough, yes, prompts, in_stream, out):
             out.write("assimilate: --yes needs --no-walkthrough (or pre-set "
                       "channel creds); cannot run an interactive walkthrough "
                       "headlessly\n")
-            return None  # usage error -> exit 4
+            return None, None  # usage error -> exit 4
         driver = _default_prompts(
             in_stream if in_stream is not None else sys.stdin, out)
 
@@ -226,6 +237,7 @@ def _run_walkthroughs(info, no_walkthrough, yes, prompts, in_stream, out):
             creds_env["DISCORD_BOT_TOKEN"] = dc.bot_token
         if dc.channel_id:
             creds_env["DISCORD_HOME_CHANNEL"] = dc.channel_id
+        walked.append("discord")
     if needs_slack:
         sc = slack_walkthrough.run_slack_walkthrough(driver, context="assimilate")
         if sc.app_token:
@@ -234,7 +246,8 @@ def _run_walkthroughs(info, no_walkthrough, yes, prompts, in_stream, out):
             creds_env["SLACK_BOT_TOKEN"] = sc.bot_token
         if sc.channel_id:
             creds_env["SLACK_HOME_CHANNEL"] = sc.channel_id
-    return creds_env
+        walked.append("slack")
+    return creds_env, walked
 
 
 def assimilate(profile_root, *, board="default", label=None, dry_run=False,
@@ -307,7 +320,8 @@ def assimilate(profile_root, *, board="default", label=None, dry_run=False,
             return EXIT_ABORTED
 
     # 4b. Walkthroughs (conditional) -- collect creds for channels not yet wired.
-    creds_env = _run_walkthroughs(info, no_walkthrough, yes, prompts, in_stream, out)
+    creds_env, walked = _run_walkthroughs(
+        info, no_walkthrough, yes, prompts, in_stream, out)
     if creds_env is None:
         return EXIT_ABORTED  # headless usage error
     has_channel = (info["channels"]["discord"] or info["channels"]["slack"]
@@ -331,12 +345,40 @@ def assimilate(profile_root, *, board="default", label=None, dry_run=False,
     #        never clobbers the operator's own decisions.md content.
     setup.patch_persona_decisions(profile_root, setup._WARROOM_PERSONA_RULE,
                                   sentinel_id="warroom-runtime")
-    # 5c/5d (walkthrough .env merge) + enroll.bootstrap + 5e (audit trail) land
-    # in T8-T9.
+    #    5c. enroll.bootstrap: writes the mailbox: block, merges MAILBOX_BOARD/
+    #        LABEL into .env, and persists local/warroom-enroll.json. We DO NOT
+    #        mutate its contract (owned by shared-core / Feature C); a missing
+    #        mailbox CLI yields status="cli-not-found" without raising.
+    state = enroll.bootstrap(profile_root, board, resolved_label, env=env)
+    #    5e. Audit trail -- kept SEPARATE from the enroll runtime state so
+    #        `warroom enroll --status` reads only enroll state, not history.
+    runtime_state.save_state(
+        profile_root / "local" / "warroom-assimilate.json",
+        {
+            "timestamp": _utc_now_iso(),
+            "board": board,
+            "label": resolved_label,
+            "channels_walked_through": walked,
+            "enroll_status": state.status,
+            "enforce": bool(enforce),
+        },
+    )
 
     # 6. Post-flight summary.
-    out.write("\nAssimilated %s. Next:\n" % profile_root)
-    out.write("  - Restart this Claude session so MAILBOX_BOARD/LABEL load into env.\n")
-    out.write("  - Run `mailbox ps` to see your peer.\n")
+    out.write("\nAssimilated %s (board=%s, label=%s). Next:\n"
+              % (profile_root, board, resolved_label))
+    out.write("  - Restart this Claude session so MAILBOX_BOARD/LABEL load "
+              "into env.\n")
+    out.write("  - Run `mailbox ps` to see your peer; if it shows empty, the "
+              "daemon may\n")
+    out.write("    need a manual `mailbox` invocation to spawn.\n")
     out.write("  - Re-run with --reconfigure to change the board or label.\n")
+    if state.status != "ok":
+        # Risk-3 mitigation (synthesis): post-flight TEXT only -- we do not touch
+        # enroll.bootstrap's contract. Config blocks are written; runtime inactive.
+        out.write("\nwar-room: mailbox CLI not found -- the war_room + mailbox "
+                  "config blocks are written but the runtime is inactive. Install "
+                  "the mailbox runtime (template/README.md) and re-run "
+                  "`warroom enroll`.\n")
+        return EXIT_CLI_MISSING
     return EXIT_OK
