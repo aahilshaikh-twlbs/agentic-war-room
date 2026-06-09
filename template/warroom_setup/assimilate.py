@@ -123,6 +123,23 @@ def _classify(profile_root):
     }
 
 
+def _existing_mailbox_board(profile_root):
+    # type: (Path) -> Optional[str]
+    """Return the MAILBOX_BOARD value already set in <profile>/.env, or None.
+    Used to surface (and gate) a board overwrite (risk-2 mitigation)."""
+    env_path = Path(profile_root) / ".env"
+    if not env_path.exists():
+        return None
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, val = stripped.split("=", 1)
+        if key.strip() == "MAILBOX_BOARD":
+            return val.strip() or None
+    return None
+
+
 def _resolve_label(profile_root, label):
     # type: (Path, Optional[str]) -> Optional[str]
     """Resolve the board label: explicit `label`, else the `handle` from
@@ -143,8 +160,9 @@ def _resolve_label(profile_root, label):
     return candidate if validators.valid_handle(candidate) else None
 
 
-def _report(info, profile_root, board, label, out, dry_run=False):
-    # type: (dict, Path, str, str, object, bool) -> None
+def _report(info, profile_root, board, label, out, dry_run=False,
+            overwrite_board=None):
+    # type: (dict, Path, str, str, object, bool, Optional[str]) -> None
     """Pre-flight summary of what assimilate will create/modify (§8 step 3)."""
     text = _config_text(profile_root)
     wr_present = setup._WR_BEGIN in text
@@ -169,6 +187,8 @@ def _report(info, profile_root, board, label, out, dry_run=False):
         wr_present, "present (will update)", "absent (will create)"))
     out.write("  mailbox block:   %s\n" % pick(
         mb_present, "present (will update)", "absent (will create)"))
+    if overwrite_board:
+        out.write("  [overwrite: MAILBOX_BOARD=%s -> %s]\n" % (overwrite_board, board))
     if dry_run:
         out.write("[dry-run] no files written.\n")
 
@@ -301,10 +321,24 @@ def assimilate(profile_root, *, board="default", label=None, dry_run=False,
         out.write("assimilate: invalid board name %r\n" % (board,))
         return EXIT_ABORTED
 
+    # 2b. Detect a MAILBOX_BOARD overwrite (risk-2): an operator who tested
+    #     mailbox standalone may already have a different board in .env.
+    old_board = _existing_mailbox_board(profile_root)
+    board_overwrite = bool(old_board) and old_board != board
+
     # 3. Pre-flight report.
-    _report(info, profile_root, board, resolved_label, out, dry_run=dry_run)
+    _report(info, profile_root, board, resolved_label, out, dry_run=dry_run,
+            overwrite_board=old_board if board_overwrite else None)
     if dry_run:
         return EXIT_OK
+
+    # 3b. A board overwrite needs an EXPLICIT ack. Interactively that is the
+    #     proceed-confirm below; headlessly (--yes) it must be --reconfigure, so
+    #     we never silently clobber an operator's existing board.
+    if board_overwrite and yes and not reconfigure:
+        out.write("assimilate: refusing to overwrite existing MAILBOX_BOARD=%s "
+                  "with %s; pass --reconfigure to confirm\n" % (old_board, board))
+        return EXIT_ABORTED
 
     # 4. Proceed-confirm (interactive unless --yes).
     if not yes:

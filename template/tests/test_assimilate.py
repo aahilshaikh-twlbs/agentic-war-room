@@ -510,3 +510,92 @@ def test_assimilate_creds_persisted_before_bootstrap_failure(tmp_path, monkeypat
     env = (prof / ".env").read_text(encoding="utf-8")
     assert "DISCORD_BOT_TOKEN=disc-tok" in env  # persisted before the failure
     assert "SLACK_BOT_TOKEN=slack-bot" in env
+
+
+# --------------------------------------------------------------------------- #
+# T11 -- exit-code matrix + MAILBOX_BOARD overwrite-confirm + fixture sanitize
+# --------------------------------------------------------------------------- #
+def test_exit_code_matrix(tmp_path):
+    # 3 -- not a Hermes profile
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert assimilate.assimilate(empty, dry_run=True, out=io.StringIO()) == 3
+
+    # 2 -- already assimilated (sentinel + enroll.json), no --reconfigure
+    a2 = tmp_path / "a2"
+    shutil.copytree(ALREADY, a2)
+    assert assimilate.assimilate(a2, yes=True, no_walkthrough=True,
+                                 out=io.StringIO()) == 2
+
+    # 4 -- orphan sentinel (sentinel, no enroll.json), no --reconfigure
+    a4 = tmp_path / "a4"
+    a4.mkdir()
+    (a4 / "config.yaml").write_text(
+        setup._WR_BEGIN + "\nwar_room:\n  board: x\n" + setup._WR_END + "\n",
+        encoding="utf-8")
+    assert assimilate.assimilate(a4, yes=True, no_walkthrough=True,
+                                 out=io.StringIO()) == 4
+
+    # 1 -- live run, mailbox CLI absent (config written, runtime inactive)
+    a1 = tmp_path / "a1"
+    shutil.copytree(FOREIGN, a1)
+    assert assimilate.assimilate(a1, board="shared", label="beta-sh", yes=True,
+                                 no_walkthrough=True, out=io.StringIO(),
+                                 env=_env_with_cli(tmp_path, with_cli=False)) == 1
+
+    # 0 -- live run, mailbox CLI present
+    a0 = tmp_path / "a0"
+    shutil.copytree(FOREIGN, a0)
+    assert _live(a0) == 0
+
+
+def test_assimilate_warns_on_existing_mailbox_board_mismatch(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)
+    (prof / ".env").write_text("MAILBOX_BOARD=old-board\n", encoding="utf-8")
+
+    # dry-run report surfaces the overwrite
+    out = io.StringIO()
+    assert assimilate.assimilate(prof, board="shared", label="beta-sh",
+                                 dry_run=True, out=out) == 0
+    assert "[overwrite: MAILBOX_BOARD=old-board -> shared]" in out.getvalue()
+
+    # headless without --reconfigure refuses (exit 4), writes nothing new
+    out2 = io.StringIO()
+    rc = assimilate.assimilate(prof, board="shared", label="beta-sh", yes=True,
+                               no_walkthrough=True, out=out2,
+                               env=_env_with_cli(tmp_path))
+    assert rc == 4
+    assert "refusing to overwrite existing MAILBOX_BOARD" in out2.getvalue()
+    assert "MAILBOX_BOARD=old-board" in (prof / ".env").read_text(encoding="utf-8")
+
+
+def test_assimilate_reconfigure_confirms_board_overwrite(tmp_path):
+    prof = tmp_path / "prof"
+    shutil.copytree(FOREIGN, prof)
+    (prof / ".env").write_text("MAILBOX_BOARD=old-board\n", encoding="utf-8")
+    rc = _live(prof, reconfigure=True)
+    assert rc == 0
+    assert "MAILBOX_BOARD=shared" in (prof / ".env").read_text(encoding="utf-8")
+
+
+def test_sanitize_assimilate_fixtures():
+    from warroom_setup import schema
+    blocklist = ("twelvelabs", "twelve labs", "tl-branding", "@twelvelabs")
+    fixtures = Path(__file__).resolve().parent / "fixtures"
+    violations = []
+    for p in sorted(fixtures.rglob("*")):
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if schema.BLOCKED_VALUES_REGEX.search(line):
+                violations.append((str(p), i, "shape", line.strip()))
+            low = line.lower()
+            for word in blocklist:
+                if word in low:
+                    violations.append((str(p), i, "name:%s" % word, line.strip()))
+    assert violations == [], violations
