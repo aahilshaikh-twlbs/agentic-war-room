@@ -13,9 +13,12 @@ test_security.test_no_module_imports_cli_or_setup_except_entrypoints).
 T5 surface: classification helpers only (_classify / _detect_channels /
 _already_assimilated). CLI + orchestrator land in later tasks.
 """
+import json
+import sys
 from pathlib import Path
+from typing import Optional
 
-from . import setup
+from . import setup, validators
 
 # Exit-code contract (mirrors enroll's; consumed by the CLI dispatch in T6+).
 EXIT_OK = 0            # assimilated (or dry-run reported cleanly)
@@ -110,3 +113,114 @@ def _classify(profile_root):
             profile_root / "local" / "persona" / "decisions.md"
         ).exists(),
     }
+
+
+def _resolve_label(profile_root, label):
+    # type: (Path, Optional[str]) -> Optional[str]
+    """Resolve the board label: explicit `label`, else the `handle` from
+    local/agent.json, else the profile directory name. Returns None if the
+    resolved value fails handle validation (the caller maps that to exit 4)."""
+    profile_root = Path(profile_root)
+    candidate = (label or "").strip()
+    if not candidate:
+        agent_json = profile_root / "local" / "agent.json"
+        if agent_json.exists():
+            try:
+                data = json.loads(agent_json.read_text(encoding="utf-8"))
+                candidate = (data.get("handle") or "").strip()
+            except (ValueError, OSError):
+                candidate = ""
+        if not candidate:
+            candidate = profile_root.name
+    return candidate if validators.valid_handle(candidate) else None
+
+
+def _report(info, profile_root, board, label, out, dry_run=False):
+    # type: (dict, Path, str, str, object, bool) -> None
+    """Pre-flight summary of what assimilate will create/modify (§8 step 3)."""
+    text = _config_text(profile_root)
+    wr_present = setup._WR_BEGIN in text
+    mb_present = setup._MB_BEGIN in text
+
+    def pick(flag, yes_msg, no_msg):
+        return yes_msg if flag else no_msg
+
+    out.write("Assimilating %s (board=%s, label=%s):\n" % (profile_root, board, label))
+    out.write("  hermes-managed:  %s\n" % ("yes" if info["is_hermes"] else "no"))
+    out.write("  awr-template:    %s\n" % ("yes" if info["is_awr_template"] else "no"))
+    out.write("  discord creds:   %s\n" % pick(
+        info["channels"]["discord"], "present (skipping walkthrough)",
+        "absent (will walk through)"))
+    out.write("  slack creds:     %s\n" % pick(
+        info["channels"]["slack"], "present (skipping walkthrough)",
+        "absent (will walk through)"))
+    out.write("  persona file:    %s\n" % pick(
+        info["has_persona_decisions"], "present (will append sentinel-bounded rule)",
+        "absent (will create + append rule)"))
+    out.write("  war_room block:  %s\n" % pick(
+        wr_present, "present (will update)", "absent (will create)"))
+    out.write("  mailbox block:   %s\n" % pick(
+        mb_present, "present (will update)", "absent (will create)"))
+    if dry_run:
+        out.write("[dry-run] no files written.\n")
+
+
+def assimilate(profile_root, *, board="default", label=None, dry_run=False,
+               reconfigure=False, no_walkthrough=False, enforce=False,
+               yes=False, env=None, out=None, prompts=None):
+    # type: (...) -> int
+    """Orchestrate assimilation of a foreign Hermes profile. Returns an exit code
+    per the EXIT_* contract.
+
+    T6 milestone: classification short-circuits (exit 3/2/4 + awr-template
+    redirect) + identity resolution + pre-flight report. The walkthrough / patch
+    / enroll steps land in T7-T9; until then a non-dry-run live call reports and
+    returns 0 without writing (the "report-only" handler the build order
+    specifies for this task).
+    """
+    out = out if out is not None else sys.stdout
+    profile_root = Path(profile_root)
+    info = _classify(profile_root)
+
+    # 1. Classification short-circuits (§7).
+    if not info["exists"] or not info["is_hermes"]:
+        missing = "directory" if not info["exists"] else "config.yaml"
+        out.write("assimilate: %s is not a Hermes profile (missing %s)\n"
+                  % (profile_root, missing))
+        return EXIT_BAD_PROFILE
+    if info["is_awr_template"]:
+        # A war-room template profile ships its own sentinel block and owns the
+        # `warroom setup` / `warroom enroll` flow -- assimilate is for FOREIGN
+        # profiles. Redirect (exit 0) rather than double-patch. Checked before
+        # orphan_sentinel so the template's shipped (un-enrolled) sentinel is not
+        # mistaken for a foreign orphan.
+        out.write("assimilate: this is a war-room template profile; use "
+                  "`warroom setup` / `warroom enroll --reconfigure` instead\n")
+        return EXIT_OK
+    if info["orphan_sentinel"]:
+        out.write("assimilate: config.yaml carries a war-room sentinel block but "
+                  "this profile was never enrolled (no local/warroom-enroll.json); "
+                  "manual review required\n")
+        return EXIT_ABORTED
+    if info["already_assimilated"] and not reconfigure:
+        out.write("assimilate: already assimilated (use --reconfigure to force "
+                  "re-write)\n")
+        return EXIT_ALREADY
+
+    # 2. Resolve identity / board label.
+    resolved_label = _resolve_label(profile_root, label)
+    if resolved_label is None:
+        out.write("assimilate: could not resolve a valid board label "
+                  "(invalid handle); pass --label\n")
+        return EXIT_ABORTED
+    if not validators.valid_board_name(board):
+        out.write("assimilate: invalid board name %r\n" % (board,))
+        return EXIT_ABORTED
+
+    # 3. Pre-flight report.
+    _report(info, profile_root, board, resolved_label, out, dry_run=dry_run)
+    if dry_run:
+        return EXIT_OK
+
+    # 4-5: walkthroughs + patches + enroll land in T7-T9.
+    return EXIT_OK
