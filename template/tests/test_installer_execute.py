@@ -1,12 +1,17 @@
 """T6 -- execute phase: in-process orchestration.
 
-Stage-1 (hermes install) and Stage-4 (plugins enable) subprocesses are faked.
-Stages 2/3/5 run in-process against the REAL profile warroom_setup modules
+Stage-1 (hermes install) and Stage-2 (plugins enable) subprocesses are faked.
+Stages 3/4/5 run in-process against the REAL profile warroom_setup modules
 (injected via `importer`) so we exercise the actual setup.write_env /
 agent_model.save / patch_*_block / enroll.bootstrap code paths.
+
+NOTE: plugins-enable is Stage 2 (reordered, T6 fix) so Hermes' PyYAML re-emit
+can't strip the sentinels written by the Stage-4 patches; Stage 4 normalizes any
+orphaned bare block first.
 """
 import io
 import json
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 INSTALLER_DIR = Path(__file__).resolve().parents[1] / "scripts" / "installer"
+TEMPLATE_DIR = Path(__file__).resolve().parents[1]
 if str(INSTALLER_DIR) not in sys.path:
     sys.path.insert(0, str(INSTALLER_DIR))
 
@@ -249,3 +255,92 @@ def test_verify_profile_importable(tmp_path):
         orch.verify_profile_importable(p)  # no __init__.py yet
     (p / "warroom_setup" / "__init__.py").write_text("", encoding="utf-8")
     orch.verify_profile_importable(p)  # now ok
+
+
+# --------------------------------------------------------------------------- #
+# T6 fix -- survive Hermes' PyYAML re-emit (sentinel stripping)
+# --------------------------------------------------------------------------- #
+def _strip_comments(cfg: Path):
+    """Simulate Hermes' PyYAML config re-emit: all comment lines (incl. our
+    sentinel lines) vanish, keys + values survive."""
+    cfg.write_text(
+        "\n".join(l for l in cfg.read_text(encoding="utf-8").splitlines()
+                  if not l.lstrip().startswith("#")) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _key_count(text, key):
+    return sum(1 for l in text.splitlines() if l.startswith(key + ":"))
+
+
+def test_execute_stages_survive_hermes_yaml_reemit(tmp_path):
+    # The shipped template config ships sentinel-bounded war_room: AND mailbox:.
+    # A re-emit (Stage 2 plugins-enable) strips the sentinels; Stage 4 must
+    # normalize the orphaned bare blocks and re-patch to exactly one each.
+    import warroom_setup.setup as setup_mod
+
+    prof = tmp_path / "alpha-sh"
+    prof.mkdir()
+    cfg = prof / "config.yaml"
+    shutil.copy2(TEMPLATE_DIR / "config.yaml", cfg)
+    _strip_comments(cfg)  # Stage 2 re-emit
+    assert ">>> warroom-managed" not in cfg.read_text(encoding="utf-8")  # sentinels gone
+
+    # Stage 4: normalize then patch (war_room + mailbox)
+    orch.normalize_unsentineled_blocks(cfg)
+    setup_mod.patch_war_room_block(prof, "shared", min_confidence=80)
+    setup_mod.patch_mailbox_block(prof, board="shared", label="alpha-sh")
+    # Stage 5: enroll re-patch (idempotent in-place; sentinels intact now)
+    setup_mod.patch_mailbox_block(prof, board="shared", label="alpha-sh")
+
+    final = cfg.read_text(encoding="utf-8")
+    assert _key_count(final, "war_room") == 1
+    assert _key_count(final, "mailbox") == 1
+    assert ">>> warroom-managed" in final
+    assert ">>> warroom-mailbox" in final
+
+
+def test_normalize_strips_only_bare_unsentineled_blocks(tmp_path):
+    import warroom_setup.setup as setup_mod
+
+    prof = tmp_path / "alpha-sh"
+    prof.mkdir()
+    cfg = prof / "config.yaml"
+    cfg.write_text(
+        "# >>> warroom-managed >>>\n"
+        "war_room:\n"
+        "  board: shared\n"
+        "  min_confidence: 80\n"
+        "# <<< warroom-managed <<<\n"
+        "\n"
+        "mailbox:\n"            # bare, sentinel-less (orphaned by a re-emit)
+        "  board: shared\n"
+        "  label: alpha-sh\n"
+        "\n"
+        "mailboxes_other:\n"    # must NOT be mistaken for `mailbox`
+        "  keep: yes\n"
+        "\n"
+        "toolsets:\n"
+        "  x: 1\n",
+        encoding="utf-8",
+    )
+    changed = orch.normalize_unsentineled_blocks(cfg)
+    assert changed is True
+    txt = cfg.read_text(encoding="utf-8")
+    # sentineled war_room preserved
+    assert ">>> warroom-managed" in txt
+    assert _key_count(txt, "war_room") == 1
+    # bare mailbox stripped
+    assert _key_count(txt, "mailbox") == 0
+    # the look-alike key + unrelated key untouched
+    assert "mailboxes_other:" in txt and "keep: yes" in txt
+    assert "toolsets:" in txt
+
+    # patching now yields a single sentineled mailbox; war_room still single.
+    setup_mod.patch_mailbox_block(prof, board="shared", label="alpha-sh")
+    txt2 = cfg.read_text(encoding="utf-8")
+    assert _key_count(txt2, "mailbox") == 1
+    assert ">>> warroom-mailbox" in txt2
+    assert _key_count(txt2, "war_room") == 1
+    assert "mailboxes_other:" in txt2  # still safe

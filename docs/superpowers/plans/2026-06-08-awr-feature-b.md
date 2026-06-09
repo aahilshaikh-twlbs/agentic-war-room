@@ -171,12 +171,14 @@ Cooked mode everywhere except raw-mode togglers (channels + model). Steps:
 10. Model stage. Dual-toggle (C8) — both selectable; precedence follows `setup.py:385`.
 11. Board + label. `valid_board_name`, default `shared`; `valid_handle`, default profile name.
 12. Confirmation screen. Lists "Will modify ~/.claude/settings.json (mailbox hooks)" (K11).
-13. Execute phase. Cooked mode. Progress lines:
+13. Execute phase. Cooked mode. Progress lines (stage order REVISED in the T6
+    fix — plugins-enable moved to Stage 2 so Hermes' PyYAML re-emit can't strip
+    the sentinels written by the in-process patches; see Section 5 / T6):
     ```
     [1/5] hermes profile install ............................. ok (2.3s)
-    [2/5] write .env and identity (in-process) ............... ok
-    [3/5] patch war_room + mailbox blocks .................... ok
-    [4/5] hermes -p <name> plugins enable warroom-gate ....... ok (0.4s)
+    [2/5] hermes -p <name> plugins enable warroom-gate ....... ok (0.4s)
+    [3/5] write .env and identity (in-process) ............... ok
+    [4/5] patch war_room + mailbox blocks .................... ok
     [5/5] cross-agent enroll bootstrap ....................... ok
     ```
 14. Success summary. Includes `Total time: Xs` (K25).
@@ -285,9 +287,13 @@ class InstallerAnswers:
 
 ### T6 — Execute phase: in-process orchestration
 
-**Create:** `in_process_orchestrator.py`. Five-stage `execute(answers, *, dry_run, verbose, stage_timeout) -> int` (hermes install → in-process .env/identity → in-process YAML patches → plugin enable → in-process enroll bootstrap).
+**Create:** `in_process_orchestrator.py`. Five-stage `execute(answers, *, dry_run, verbose, stage_timeout, skip_install, ...) -> ExecuteResult`.
 
-**Tests** (`test_installer_execute.py`, 13): dry_run_no_subprocesses, stage1_correct_hermes_args, stage2_writes_env_with_secrets, stage2_writes_identity, stage3_patches_war_room, stage3_patches_mailbox, stage4_profile_scoped_no_yes, stage4_failure_does_not_abort, stage5_calls_bootstrap_in_process, stage5_handles_enroll_status_codes, install_log_truncated, total_time_in_summary, verbose_tees_to_stderr.
+**Stage order (REVISED — T6 fix, post-SMOKE).** Originally: install → .env/identity → YAML patches → plugin enable → enroll. SMOKE found that `hermes plugins enable` re-emits config.yaml via PyYAML, which strips ALL comments (including the `warroom-managed`/`warroom-mailbox` sentinels). Because the shipped template config.yaml ALREADY carries sentinel-bounded `war_room:`/`mailbox:` blocks, the re-emit orphaned them and the next `patch_*_block` (which appends-on-missing-sentinel) created DUPLICATE keys. **Fix (Option A):** (1) reorder plugin-enable to Stage 2 so the only re-emit happens before any in-process patch, and (2) in Stage 4, `normalize_unsentineled_blocks` strips an orphaned bare `war_room:`/`mailbox:` block (sentinel pair absent) before patching, so a single canonical sentinel-bounded copy is written. New order: **install → plugins enable → .env/identity → patch war_room+mailbox → enroll bootstrap.** `ExecuteResult` (not bare int) carries `completed_stages`/`warnings`/`failed_stage`/`enroll_status` for T8 rollback; `main()` returns `.exit_code`.
+
+> **Known follow-up (Option B, shared-core, NOT this PR):** make `setup._replace_sentinel_block` fall back to matching the bare YAML key span when sentinels are missing. When that lands, `normalize_unsentineled_blocks` becomes a no-op and can be deleted (it carries a comment pointing here).
+
+**Tests** (`test_installer_execute.py`): dry_run_no_subprocesses, stage1_correct_hermes_args, stage2_writes_env_with_secrets, stage2_writes_identity, stage3_patches_war_room, stage3_patches_mailbox, stage4_profile_scoped_no_yes, stage4_failure_does_not_abort, stage5_calls_bootstrap_in_process, stage5_handles_enroll_status_codes, install_log_truncated, total_time_in_summary, verbose_tees_to_stderr, **test_execute_stages_survive_hermes_yaml_reemit**, **test_normalize_strips_only_bare_unsentineled_blocks** (+ integration `test_full_install_produces_no_duplicate_top_level_keys`). (Stage labels shifted with the reorder; the existing tests assert behavior/filesystem, not stage numbers.)
 
 **Deps:** T3, T4, T5.
 
@@ -438,8 +444,8 @@ All outcomes written to `template/docs/installer-preflight.md`.
 
 ## Definition of Done (10 gates)
 
-1. `pytest template/tests/test_installer_*.py -v` → 97 unit tests passed.
-2. `pytest template/tests/test_installer_e2e.py -v --runintegration` → 7 integration passed.
+1. `pytest template/tests/test_installer_*.py -v` → installer unit tests passed (97 budgeted; 112 shipped incl. T6-fix regressions).
+2. `pytest template/tests/test_installer_e2e.py -v --runintegration` → 8 integration passed (7 + `test_full_install_produces_no_duplicate_top_level_keys`).
 3. Substrate drift test passes (byte-equality across 7 vendored files).
 4. `bash template/install.sh --help` exits 0 and lists all flags.
 5. Manual SMOKE.md walkthrough completed: two profiles meet on board `shared` per `mailbox ps`.
@@ -448,6 +454,7 @@ All outcomes written to `template/docs/installer-preflight.md`.
 8. Uninstall round-trip passes.
 9. No `installer-answers.json` or `.warroom-setup.json` artifacts under `template/`.
 10. `template/docs/installer-preflight.md` exists with all 8 outcomes documented.
+11. A fresh install produces a STRUCTURALLY CLEAN config.yaml: exactly one sentinel-bounded `war_room:` and one `mailbox:` (no duplicate top-level keys after Hermes' YAML re-emit) — the T6-fix acceptance bar.
 
 ---
 

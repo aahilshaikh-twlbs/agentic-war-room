@@ -33,9 +33,10 @@ Run `bash install.sh` and answer:
 - Board / label: `shared` / `alpha-sh`.
 - Confirm screen lists `~/.claude/settings.json (mailbox hooks)` — proceed.
 
-Watch the 5 stage lines all reach `ok` (Stage 4 may `warn` if `warroom-gate`
-is already enabled — that is advisory and does not abort). Note the
-`Total time: Ns` summary.
+Watch the 5 stage lines all reach `ok` (Stage 2 `plugins enable` may `warn` if
+`warroom-gate` is already enabled — that is advisory and does not abort). Stage
+order: 1 install → 2 plugins enable → 3 .env + identity → 4 patch war_room +
+mailbox → 5 enroll. Note the `Total time: Ns` summary.
 
 ## 3. Install the second agent (`beta-sh`)
 
@@ -48,10 +49,19 @@ board `shared`.
 cat ~/.hermes/profiles/alpha-sh/local/install.log    # 5 stages, no secret values
 cat ~/.hermes/profiles/alpha-sh/config.yaml          # war_room: + mailbox: blocks, board: shared
 hermes -p alpha-sh exec warroom enroll --status      # informational
+
+# Acceptance: EXACTLY one sentinel-bounded war_room: and one mailbox: (no dups).
+grep -c '^war_room:'        ~/.hermes/profiles/alpha-sh/config.yaml   # -> 1
+grep -c '^mailbox:'         ~/.hermes/profiles/alpha-sh/config.yaml   # -> 1
+grep -c 'warroom-managed'   ~/.hermes/profiles/alpha-sh/config.yaml   # -> 2 (begin+end)
+grep -c 'warroom-mailbox'   ~/.hermes/profiles/alpha-sh/config.yaml   # -> 2 (begin+end)
 ```
 
 `install.log` must contain NO token/key values (only stage names + the install
-command lines).
+command lines). The `grep -c` counts above are the structural acceptance bar:
+Hermes' `plugins enable` re-emits config.yaml (stripping comments), so the
+installer runs it FIRST (Stage 2) and re-writes the sentinel blocks afterward
+(Stage 4) — duplicate `war_room:`/`mailbox:` keys mean that ordering regressed.
 
 ## 5. Verify they meet on board `shared`
 

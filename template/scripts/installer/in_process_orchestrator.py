@@ -20,6 +20,7 @@ Stdlib only, Python >=3.9.
 """
 from __future__ import annotations
 
+import re
 import sys
 import time
 import uuid
@@ -30,16 +31,27 @@ from typing import List, Optional, Sequence, TextIO
 
 import subprocess_runner
 
-# Stage labels (§3 step 13).
+# Stage labels (§3 step 13). NOTE: plugins-enable is Stage 2 -- it must run
+# BEFORE the in-process YAML patches (Stages 4/5) because Hermes re-emits
+# config.yaml via PyYAML, which strips ALL comments (including the warroom-managed
+# / warroom-mailbox sentinels). Running it first means the only re-emit happens
+# while no freshly-written sentinels are on disk; Stage 4 then normalizes any
+# orphaned bare block and writes the canonical sentinel-bounded copy.
 STAGE_LABELS = {
     1: "hermes profile install",
-    2: "write .env and identity (in-process)",
-    3: "patch war_room + mailbox blocks",
-    4: "plugins enable warroom-gate",
+    2: "plugins enable warroom-gate",
+    3: "write .env and identity (in-process)",
+    4: "patch war_room + mailbox blocks",
     5: "cross-agent enroll bootstrap",
 }
 
 _LOG_CAP_BYTES = 1_000_000  # K14: 1MB cap
+
+# Top-level config.yaml keys we manage, with their sentinel begin-marker.
+_MANAGED_BLOCKS = {
+    "war_room": ">>> warroom-managed",
+    "mailbox": ">>> warroom-mailbox",
+}
 
 
 @dataclass
@@ -156,6 +168,52 @@ def _env_values_from_answers(answers) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# config.yaml sentinel normalization (Stage 4 pre-patch)
+# --------------------------------------------------------------------------- #
+def _strip_bare_block(text: str, key: str) -> str:
+    """Remove a top-level ``key:`` block: the header line plus its indented/blank
+    continuation lines, up to (not including) the next top-level key or EOF.
+    Anchored on a bare mapping header (``^key:$``) so ``mailboxes_other:`` does
+    NOT match ``mailbox``."""
+    pat = re.compile(
+        r"(?m)^%s:[ \t]*\n(?:[ \t].*\n|[ \t]*\n)*" % re.escape(key)
+    )
+    return pat.sub("", text)
+
+
+def normalize_unsentineled_blocks(config_path: Path) -> bool:
+    """Drop an ORPHANED bare managed block before re-patching.
+
+    Hermes' ``plugins enable`` re-emits config.yaml via PyYAML, which strips all
+    comments -- including our ``warroom-managed`` / ``warroom-mailbox`` sentinel
+    lines. The shipped template already carries sentinel-bounded ``war_room:`` /
+    ``mailbox:`` blocks, so after a re-emit those keys survive but their
+    sentinels do not. ``setup._replace_sentinel_block`` appends-on-missing, so a
+    subsequent ``patch_*_block`` would create a DUPLICATE key. This strips the
+    bare (sentinel-less) block first so the patch writes a single canonical
+    sentinel-bounded copy. No-op when the sentinels are intact.
+
+    FOLLOW-UP: the principled fix is a YAML-key fallback inside shared-core's
+    ``setup._replace_sentinel_block``; when that lands this normalize step becomes
+    a no-op and can be removed. Returns True if anything was stripped.
+    """
+    cfg = Path(config_path)
+    if not cfg.exists():
+        return False
+    text = cfg.read_text(encoding="utf-8")
+    changed = False
+    for key, sentinel in _MANAGED_BLOCKS.items():
+        has_sentinel = sentinel in text
+        has_bare_key = re.search(r"(?m)^%s:[ \t]*$" % re.escape(key), text) is not None
+        if not has_sentinel and has_bare_key:
+            text = _strip_bare_block(text, key)
+            changed = True
+    if changed:
+        cfg.write_text(text, encoding="utf-8")
+    return changed
+
+
+# --------------------------------------------------------------------------- #
 # Execute
 # --------------------------------------------------------------------------- #
 def execute(
@@ -193,9 +251,10 @@ def execute(
         out.write("[dry-run] would install profile %r from %s\n"
                   % (answers.profile_name, answers.source))
         out.write("[dry-run] would run: %s\n" % " ".join(hermes_install_cmd(answers)))
+        out.write("[dry-run] would run: %s\n" % " ".join(plugin_enable_cmd(answers)))
         out.write("[dry-run] would write .env keys: %s\n"
                   % ", ".join(sorted(_env_values_from_answers(answers))))
-        out.write("[dry-run] would run: %s\n" % " ".join(plugin_enable_cmd(answers)))
+        out.write("[dry-run] would patch war_room + mailbox blocks (board %r)\n" % answers.board)
         out.write("[dry-run] would enroll on board %r label %r\n" % (answers.board, answers.label))
         result.total_time_s = time.monotonic() - started
         out.write("Total time: %.1fs\n" % result.total_time_s)
@@ -238,7 +297,26 @@ def execute(
             result.failed_stage = 1
             return result
 
-        # ---- Stage 2: .env + identity (in-process) -------------------------
+        # ---- Stage 2: plugins enable (advisory failure) --------------------
+        # Runs BEFORE the in-process YAML patches: this is the one step that
+        # triggers Hermes' PyYAML re-emit (which strips sentinel comments). Doing
+        # it first means Stage 4 writes the sentinels into a file nothing re-emits
+        # afterward. Failure is advisory (F1/K4) and does NOT abort.
+        pcmd = plugin_enable_cmd(answers)
+        log.write("$ " + " ".join(pcmd))
+        pres = plugin_runner(pcmd, timeout=30.0, tee=tee)
+        for ln in pres.lines:
+            log.write(ln)
+        if pres.ok:
+            _stage_line(2, "ok")
+        else:
+            warn = "plugins enable failed (rc=%s); enable manually: %s" % (
+                pres.returncode, " ".join(pcmd))
+            _stage_line(2, "warn", warn)
+            result.warnings.append(warn)
+        result.completed_stages.append(2)
+
+        # ---- Stage 3: .env + identity (in-process) -------------------------
         env_values = _env_values_from_answers(answers)
         if env_values:
             mods.setup.write_env(profile_root, env_values, ".env")  # C14: positional filename
@@ -257,32 +335,21 @@ def execute(
             agent_fingerprint=fingerprint,
         )
         mods.agent_model.save(agent_json, ident)
-        _stage_line(2, "ok", "%d env key(s), identity %s" % (len(env_values), answers.agent_name))
-        result.completed_stages.append(2)
+        _stage_line(3, "ok", "%d env key(s), identity %s" % (len(env_values), answers.agent_name))
+        result.completed_stages.append(3)
 
-        # ---- Stage 3: war_room + mailbox blocks ----------------------------
+        # ---- Stage 4: war_room + mailbox blocks ----------------------------
+        # Normalize first: if plugins-enable's re-emit orphaned a sentinel-less
+        # war_room:/mailbox: block, strip it so patch_*_block writes a single
+        # canonical sentinel-bounded copy instead of appending a duplicate.
+        normalize_unsentineled_blocks(profile_root / "config.yaml")
         mods.setup.patch_war_room_block(
             profile_root, answers.board, min_confidence=answers.min_confidence
         )
         mods.setup.patch_mailbox_block(
             profile_root, board=answers.board, label=answers.label
         )
-        _stage_line(3, "ok", "board %s" % answers.board)
-        result.completed_stages.append(3)
-
-        # ---- Stage 4: plugins enable (advisory failure) --------------------
-        pcmd = plugin_enable_cmd(answers)
-        log.write("$ " + " ".join(pcmd))
-        pres = plugin_runner(pcmd, timeout=30.0, tee=tee)
-        for ln in pres.lines:
-            log.write(ln)
-        if pres.ok:
-            _stage_line(4, "ok")
-        else:
-            warn = "plugins enable failed (rc=%s); enable manually: %s" % (
-                pres.returncode, " ".join(pcmd))
-            _stage_line(4, "warn", warn)
-            result.warnings.append(warn)  # F1/K4: advisory, does NOT abort
+        _stage_line(4, "ok", "board %s" % answers.board)
         result.completed_stages.append(4)
 
         # ---- Stage 5: enroll bootstrap (in-process) ------------------------

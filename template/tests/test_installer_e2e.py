@@ -268,3 +268,38 @@ def test_headless_full_install_with_env_secrets(tmp_path, monkeypatch):
     env_text = (profiles_root / "alpha-sh" / ".env").read_text(encoding="utf-8")
     assert "ANTHROPIC_API_KEY=sk-ant-" in env_text
     assert "DISCORD_BOT_TOKEN=" + _FAKE_DISCORD in env_text
+
+
+def test_full_install_produces_no_duplicate_top_level_keys(tmp_path, monkeypatch):
+    # End-to-end with a plugins-enable that does a REAL config re-emit (strips
+    # comments incl. sentinels) -- the exact SMOKE failure mode. The reordered
+    # flow + Stage-4 normalize must leave exactly ONE sentinel-bounded war_room:
+    # and ONE mailbox: (the bug produced duplicates).
+    _isolate_home(monkeypatch, tmp_path)
+    profiles_root = tmp_path / "profiles"
+    a = _answers("alpha-sh")
+    prof = profiles_root / a.profile_name
+
+    def hermes(cmd, *, timeout, tee=None):
+        _materialize(prof)  # lands the real template config.yaml (sentineled blocks)
+        return _ok()
+
+    def plugin_reemit(cmd, *, timeout, tee=None):
+        cfg = prof / "config.yaml"
+        cfg.write_text(
+            "\n".join(l for l in cfg.read_text(encoding="utf-8").splitlines()
+                      if not l.lstrip().startswith("#")) + "\n",
+            encoding="utf-8",
+        )
+        return _ok()
+
+    res = orch.execute(
+        a, profiles_root=profiles_root, hermes_runner=hermes,
+        plugin_runner=plugin_reemit, out=io.StringIO(),  # default importer
+    )
+    assert res.exit_code == 0
+    cfg = (prof / "config.yaml").read_text(encoding="utf-8")
+    assert sum(1 for l in cfg.splitlines() if l.startswith("war_room:")) == 1
+    assert sum(1 for l in cfg.splitlines() if l.startswith("mailbox:")) == 1
+    assert ">>> warroom-managed" in cfg
+    assert ">>> warroom-mailbox" in cfg
