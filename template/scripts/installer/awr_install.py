@@ -640,20 +640,74 @@ def run_tui(args, *, io=None, sidecar=None, restore=None, git_runner=None) -> Op
         return None
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    """Top-level dispatch. Real behavior is filled in by later tasks.
+# =========================================================================== #
+# T11 -- uninstall
+# =========================================================================== #
+SETTINGS_JSON_UNINSTALL_WARNING = (
+    "NOTE: ~/.claude/settings.json mailbox hooks are NOT auto-removed; remove "
+    "them manually if no other AWR profile uses the mailbox."
+)
 
-    T1 ships the skeleton: parse args and route to the correct mode. The wizard
-    (T5), execute phase (T6), headless (T9) and uninstall (T11) replace the
-    stub bodies below.
+
+def _default_confirm(prompt: str) -> bool:
+    try:
+        return input(prompt).strip().lower().startswith("y")
+    except EOFError:
+        return False
+
+
+def uninstall(
+    name: str,
+    *,
+    profiles_root: Optional[Path] = None,
+    hermes_runner=None,
+    confirm=None,
+    sidecar=None,
+    out=None,
+) -> int:
+    """Uninstall ``name``: confirm on user data, ``hermes profile delete``, clean
+    the sidecar, and warn that settings.json hooks are not auto-removed."""
+    out = out if out is not None else sys.stdout
+    hermes_runner = hermes_runner if hermes_runner is not None else orch._default_hermes_runner
+    profiles_root = Path(profiles_root) if profiles_root else Path("~/.hermes/profiles").expanduser()
+    profile_root = profiles_root / name
+
+    inspection = profile_detect.inspect_profile(profile_root)
+    if not inspection.exists:
+        out.write("Profile %r not found at %s\n" % (name, profile_root))
+        return 4
+
+    if inspection.has_user_data:
+        ask = confirm if confirm is not None else _default_confirm
+        if not ask("Profile %r has user data. Delete anyway? [y/N] " % name):
+            out.write("Aborted; profile left intact.\n")
+            return 3
+
+    cmd = ["hermes", "profile", "delete", name, "-y"]
+    res = hermes_runner(cmd, timeout=60.0)
+    if not res.ok:
+        out.write("hermes profile delete failed (rc=%s)\n" % res.returncode)
+        return 1
+
+    sc = sidecar if sidecar is not None else sidecar_state.Sidecar()
+    sc.cleanup()
+
+    out.write("Uninstalled %r.\n" % name)
+    out.write(SETTINGS_JSON_UNINSTALL_WARNING + "\n")
+    return 0
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Top-level dispatch.
+
+    Routes to uninstall (T11), resume (T7), headless (T9) or the interactive
+    wizard (T5) + execute phase (T6).
     """
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.uninstall:
-        # T11 fills this in.
-        print("awr_install %s: uninstall mode (skeleton)" % __version__)
-        return 0
+        return uninstall(args.uninstall)
 
     sidecar = sidecar_state.Sidecar()
     if args.resume:
