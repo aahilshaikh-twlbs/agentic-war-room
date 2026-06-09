@@ -67,7 +67,11 @@ def test_check_reports_drift_without_writing(tmp_path):
     assert target.read_text() == "stale\n"     # never written in check mode
 
 
-def test_shipped_manifest_compiles_against_seeded_overlay(tmp_path):
+def test_shipped_manifest_compiles_against_seeded_overlay(tmp_path, monkeypatch):
+    # Redirect ~ to tmp_path so the manifest's "~/.hermes" and "~/.claude"
+    # targets (resolved via os.path.expanduser in persona_sync.run) land in the
+    # sandbox instead of the developer's real home.
+    monkeypatch.setenv("HOME", str(tmp_path))
     # Simulate an installed profile: copy persona/ -> local/persona/, then compile.
     import shutil
     src = Path(__file__).resolve().parents[1]
@@ -81,11 +85,6 @@ def test_shipped_manifest_compiles_against_seeded_overlay(tmp_path):
     assert rc == 0
     soul = (Path.home() / ".hermes" / "profiles" / "aria-sh" / "SOUL.md")
     head = (Path.home() / ".claude" / "agents" / "aria.md")
-    try:
-        assert soul.is_file() and head.is_file()
-        assert "{{" not in soul.read_text() and "{{" not in head.read_text()
-        assert "## Voice" in soul.read_text()
-    finally:
-        for p in (soul, head):
-            if p.exists():
-                p.unlink()
+    assert soul.is_file() and head.is_file()
+    assert "{{" not in soul.read_text() and "{{" not in head.read_text()
+    assert "## Voice" in soul.read_text()
