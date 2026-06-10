@@ -50,3 +50,27 @@ def test_classifier_cases_file_is_valid_list():
 def test_classifier_regression_cases(text, expected, note):
     # One confirmed real-traffic failure per row. Empty today by design.
     assert C.is_claim(text) is expected, note
+
+
+def test_infer_severity_raises_untagged_on_prod_cue():
+    # cue words bump a default/untagged claim to alert2 (never alert1).
+    assert C.infer_severity("the prod database is down", "default") == "alert2"
+    assert C.infer_severity("we have an outage in payments", "default") == "alert2"
+    assert C.infer_severity("possible data loss on the primary", "default") == "alert2"
+
+
+def test_infer_severity_never_lowers_an_explicit_tag():
+    # An explicit alert1 stays alert1 even with no cue words.
+    assert C.infer_severity("everything is calm", "alert1") == "alert1"
+    # An explicit alert2 is not lowered, and not raised past alert2 by a cue.
+    assert C.infer_severity("prod outage", "alert2") == "alert2"
+
+
+def test_infer_severity_no_cue_keeps_default():
+    assert C.infer_severity("the test suite is a bit slow", "default") == "default"
+
+
+def test_infer_severity_never_produces_alert1():
+    # Raise-only and conservative: the classifier can demand alert2 rigor at most;
+    # alert1 must be an explicit human/agent tag.
+    assert C.infer_severity("prod data loss outage breach", "default") != "alert1"

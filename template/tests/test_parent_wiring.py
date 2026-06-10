@@ -42,7 +42,12 @@ def test_mailbox_block_unchanged_by_parent_feature(tmp_path):
 
 def test_selectables_parent_field_appended_last_with_enable_if():
     ids = [f.id for f in selectables.TEXT_FIELDS]
-    assert ids[-1] == "warroom.parent"      # F10 rule: appended, never inserted
+    assert "warroom.parent" in ids
+    # F10 rule: parent was appended after warroom.label (never inserted before
+    # the existing channel/identity fields). DEFCON fields (position 3) append
+    # after parent, so parent is no longer the literal last id.
+    assert ids.index("warroom.parent") > ids.index("warroom.label")
+    assert ids.index("warroom.parent") < ids.index("warroom.verifier_label")
     fld = [f for f in selectables.TEXT_FIELDS if f.id == "warroom.parent"][0]
     assert fld.enable_if == "warroom.enroll"
     assert fld.secret is False and fld.required is False
@@ -120,3 +125,19 @@ def test_run_setup_blank_parent_omits_kwarg(tmp_path, monkeypatch):
     assert rc == 0
     assert rec.calls == [{"board": "squad-api", "label": "alpha-sh"}]
     assert "parent:" not in (prof / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_run_setup_writes_severity_table_and_verifier(tmp_path, monkeypatch):
+    prof = _fake_profile(tmp_path)
+    rec = _ParentAwareRecorder()
+    # prompt order after channels: board, min_confidence, label, parent,
+    # severity_alert1, severity_alert2, verifier_label
+    rc = _run(prof, monkeypatch, rec,
+              extra_lines="squad-api\n75\nalpha-sh\n\n95\n85\nverify-sh\n")
+    assert rc == 0
+    text = (prof / "config.yaml").read_text(encoding="utf-8")
+    assert "  severity_thresholds:" in text
+    assert "    alert1: 95" in text and "    alert2: 85" in text
+    assert "    default: 75" in text
+    assert "verifier_label: verify-sh" in text
+    assert "require_verifier_at: alert1" in text

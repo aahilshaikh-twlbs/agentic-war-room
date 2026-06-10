@@ -257,3 +257,45 @@ def test_blank_verifier_label_at_gated_severity_abstains(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     out = wg_gate.gate(response_text=_ALERT1)
     assert out is not None and "Holding back" in out
+
+
+def test_hybrid_raises_untagged_to_alert2_floor(tmp_path, monkeypatch):
+    # hybrid mode: an untagged claim with a prod cue is held to the alert2 floor.
+    (tmp_path / "config.yaml").write_text(
+        "war_room:\n"
+        "  enabled: true\n"
+        "  enforce: true\n"
+        "  label: alpha-sh\n"
+        "  min_confidence: 75\n"
+        "  show_confidence_badge: true\n"
+        "  severity_inference: hybrid\n"
+        "  severity_thresholds:\n"
+        "    alert2: 90\n"
+        "    default: 75\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # clears default 75 but not the raised alert2 floor 90 -> held back
+    out = wg_gate.gate(
+        response_text="the prod database is down\n"
+                      "⟦conf=0.80 grounded=tool,file missing=none⟧")
+    assert out is not None and "Holding back" in out
+    assert "sev=alert2" in _gate_log(tmp_path)
+
+
+def test_explicit_mode_does_not_raise(tmp_path, monkeypatch):
+    # default (explicit) mode: the same claim is held only to the default floor.
+    (tmp_path / "config.yaml").write_text(
+        "war_room:\n"
+        "  enabled: true\n"
+        "  enforce: true\n"
+        "  label: alpha-sh\n"
+        "  min_confidence: 75\n"
+        "  show_confidence_badge: true\n"
+        "  severity_thresholds:\n"
+        "    alert2: 90\n"
+        "    default: 75\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    out = wg_gate.gate(
+        response_text="the prod database is down\n"
+                      "⟦conf=0.80 grounded=tool,file missing=none⟧")
+    assert out is not None and "⟦" not in out and "80%" in out
+    assert "sev=default" in _gate_log(tmp_path)

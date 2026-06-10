@@ -67,8 +67,15 @@ def gate(response_text="", session_id="", model="", platform="", **_):
 
         threshold = cfg["min_confidence"] / 100.0
         sev = env.sev if env is not None else "default"
+        # Hybrid inference (raise-only): in hybrid mode an untagged/default claim
+        # with severity cue words is bumped to a stricter floor. Never lowers an
+        # explicit tag; never produces alert1.
+        if cfg["severity_inference"] == "hybrid":
+            sev = wg_classify.infer_severity(
+                body if env is not None else response_text, sev)
         decision = wg_policy.decide(
-            True, env, threshold, severity_thresholds=cfg["severity_thresholds"])
+            True, env, threshold, severity_thresholds=cfg["severity_thresholds"],
+            severity=sev)
         conf_pct = int(round(env.conf * 100)) if env is not None else None
         floor_pct = int(round(
             wg_policy.resolve_floor(sev, threshold, cfg["severity_thresholds"]) * 100))

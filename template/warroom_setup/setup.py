@@ -450,8 +450,25 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
         mc = schema.clamp_pct(values.get("warroom.min_confidence", ""))
         board = values.get("warroom.board", "").strip()
         parent = values.get("warroom.parent", "").strip()
-        patch_war_room_block(profile_root, board, parent=parent,
-                             min_confidence=mc, enforce=("warroom.enforce" in selected))
+        sev_table = {}
+        a1 = schema.clamp_pct(values.get("warroom.severity_alert1", ""), default=0)
+        a2 = schema.clamp_pct(values.get("warroom.severity_alert2", ""), default=0)
+        if a1:
+            sev_table["alert1"] = a1
+        if a2:
+            sev_table["alert2"] = a2
+        if sev_table:
+            sev_table.setdefault("default", mc)
+        verifier_label = values.get("warroom.verifier_label", "").strip()
+        # require_verifier_at defaults to alert1 only when a verifier label and an
+        # alert1 floor are both configured (otherwise leave the path off).
+        require_at = "alert1" if (verifier_label and "alert1" in sev_table) else ""
+        patch_war_room_block(
+            profile_root, board, parent=parent,
+            min_confidence=mc, enforce=("warroom.enforce" in selected),
+            severity_thresholds=sev_table,
+            verifier_label=verifier_label,
+            require_verifier_at=require_at)
         # Cross-agent runtime: bootstrap writes the mailbox: block (same board,
         # keeping war_room.board / mailbox.board in sync per decision #13),
         # persists runtime state, and installs the Claude Code SessionStart hook.

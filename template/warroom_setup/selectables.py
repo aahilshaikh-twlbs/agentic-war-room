@@ -83,6 +83,17 @@ TEXT_FIELDS = [
     TextField(id="warroom.parent",
               prompt="Parent board (for federation; blank for a standalone board)",
               required=False, enable_if="warroom.enroll"),
+    # DEFCON / severity (appended AFTER warroom.parent — F10 append rule). These
+    # collect the per-severity floors and the verifier label; blank = feature off.
+    TextField(id="warroom.severity_alert1",
+              prompt="Severity alert1 confidence floor % (blank to skip)",
+              required=False, enable_if="warroom.enroll"),
+    TextField(id="warroom.severity_alert2",
+              prompt="Severity alert2 confidence floor % (blank to skip)",
+              required=False, enable_if="warroom.enroll"),
+    TextField(id="warroom.verifier_label",
+              prompt="Verifier label (mailbox label of a designated 2nd agent; blank for none)",
+              required=False, enable_if="warroom.enroll"),
 ]
 
 # Secrets that must NEVER be written to the answers JSON (only to .env).

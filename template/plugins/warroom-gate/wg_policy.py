@@ -32,8 +32,8 @@ def resolve_floor(sev, threshold, severity_thresholds=None):
     return pct / 100.0
 
 
-def decide(is_claim, env, threshold, severity_thresholds=None):
-    # type: (bool, Optional[Envelope], float, Optional[Dict[str, int]]) -> Decision
+def decide(is_claim, env, threshold, severity_thresholds=None, severity=None):
+    # type: (bool, Optional[Envelope], float, Optional[Dict[str, int]], Optional[str]) -> Decision
     if not is_claim:
         return Decision(PASS, "chatter")
     if env is None:
@@ -42,10 +42,12 @@ def decide(is_claim, env, threshold, severity_thresholds=None):
         return Decision(ABSTAIN, "ungrounded", env.missing)
     # Below the baseline (default) floor -> generic below-threshold. At/above the
     # baseline but below the claim's stricter per-severity floor ->
-    # below-severity-floor (distinct audit + message).
+    # below-severity-floor (distinct audit + message). `severity` overrides
+    # env.sev when supplied (the gate passes a hybrid-raised severity here).
     if env.conf < threshold:
         return Decision(ABSTAIN, "below-threshold", env.missing)
-    floor = resolve_floor(env.sev, threshold, severity_thresholds)
+    sev = severity if severity is not None else env.sev
+    floor = resolve_floor(sev, threshold, severity_thresholds)
     if env.conf < floor:
         return Decision(ABSTAIN, "below-severity-floor", env.missing)
     return Decision(PASS, "ok")

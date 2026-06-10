@@ -47,3 +47,24 @@ def matched_chatter(text):
     if low in _CHATTER:
         return low
     return None
+
+# Conservative severity cue words. The hybrid classifier may RAISE an
+# untagged/`default` claim to `alert2` (more rigor), NEVER lower an explicit tag,
+# and NEVER fabricate `alert1` (top tier must be an explicit human/agent tag).
+# This preserves the gate's fail-closed bias: inference can only demand more.
+_SEV_CUES = (
+    "prod", "production", "outage", "data loss", "corrupt", "breach",
+    "down", "failing", "customer impact", "incident",
+)
+
+
+def infer_severity(text, current):
+    # type: (str, str) -> str
+    """Return a possibly-RAISED severity. Only an untagged/`default` claim with a
+    cue word is bumped (to `alert2`); any explicit tag is returned unchanged."""
+    if current != "default":
+        return current
+    low = (text or "").lower()
+    if any(cue in low for cue in _SEV_CUES):
+        return "alert2"
+    return current
