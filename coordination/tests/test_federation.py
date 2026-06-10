@@ -950,3 +950,14 @@ def test_cli_fleet_render_shows_via_name(tmp_home, tmp_path, monkeypatch,
     out = capsys.readouterr().out
     assert "squad-sh" in out
     assert "(squad-api)" in out                     # via_name annotation
+
+
+def test_dispatch_exposes_federated_read_ops(engine, tmp_path):
+    from mailbox import protocol
+    _setup_tree(engine, tmp_path)
+    r1 = protocol.dispatch(engine, {"op": "federated_messages",
+                                    "args": {"board_id": "named-org"}})
+    assert r1["ok"] is True and isinstance(r1["data"], list)
+    r2 = protocol.dispatch(engine, {"op": "federated_presence",
+                                    "args": {"board_id": "named-org"}})
+    assert r2["ok"] is True and isinstance(r2["data"], list)

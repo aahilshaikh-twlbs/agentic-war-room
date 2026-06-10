@@ -17,6 +17,7 @@ OPS = {
     "board", "gc", "ping",
     "claim_lane", "release_lane", "list_lanes",
     "create_board", "set_parent", "set_delivery", "tree", "fleet",
+    "federated_messages", "federated_presence",
 }
 
 
