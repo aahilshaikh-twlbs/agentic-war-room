@@ -120,3 +120,17 @@ def test_log_multiword_matched_token_stays_one_space_free_field(tmp_path):
     assert "it" not in line.split()        # no orphaned bare "it" token
     full = hashlib.sha256("got it".encode("utf-8")).hexdigest()
     assert parsed["sha256"] == full        # sha256 survives intact, not by luck
+
+
+def test_log_records_sev_and_verify_extra(tmp_path):
+    d = P.Decision(P.PASS, "ok")
+    A.log(tmp_path, d, 0.97, "claim", "prod db corrupted",
+          verdict="claim", extra={"sev": "alert1", "verify": "signed"})
+    text = (tmp_path / "local" / "war_room" / "gate.log").read_text()
+    assert "sev=alert1" in text and "verify=signed" in text
+    # extra fields land immediately BEFORE sha256= (DV1: this plan adds the extra=
+    # kwarg; the classifier plan's INTERFACE CONTRACT keeps sha256= last).
+    assert text.index("sev=") < text.index("sha256=")
+    assert text.index("verify=") < text.index("sha256=")
+    # still no body in the log
+    assert "prod db corrupted" not in text

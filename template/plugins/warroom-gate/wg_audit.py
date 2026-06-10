@@ -32,8 +32,8 @@ def _len_bucket(text):
     return "l"
 
 
-def log(profile_root, decision, conf, kind, text, verdict=None):
-    # type: (Path, Decision, Optional[float], str, str, Optional[str]) -> None
+def log(profile_root, decision, conf, kind, text, verdict=None, extra=None):
+    # type: (Path, Decision, Optional[float], str, str, Optional[str], Optional[dict]) -> None
     try:
         t = text or ""
         digest = hashlib.sha256(t.encode("utf-8")).hexdigest()
@@ -47,12 +47,18 @@ def log(profile_root, decision, conf, kind, text, verdict=None):
         ends_q = "1" if t.rstrip().endswith("?") else "0"
         multiline = "1" if "\n" in t else "0"
         verdict_tok = "" if verdict is None else ("verdict=%s " % verdict)
+        # DEFCON / severity (DV1): ordered additive tokens (e.g. sev=, verify=)
+        # rendered immediately BEFORE sha256= so the "sha256 emitted last"
+        # interface contract holds. dict insertion order is stable (py3.7+).
+        extra_tok = ""
+        if extra:
+            extra_tok = "".join("%s=%s " % (k, v) for k, v in extra.items())
         line = (
             "%s %saction=%s reason=%s conf=%s kind=%s "
-            "len=%s ends_q=%s multiline=%s matched=%s sha256=%s\n"
+            "len=%s ends_q=%s multiline=%s matched=%s %ssha256=%s\n"
         ) % (
             ts, verdict_tok, decision.action, decision.reason, conf_s, kind,
-            _len_bucket(t), ends_q, multiline, matched, digest,
+            _len_bucket(t), ends_q, multiline, matched, extra_tok, digest,
         )
         d = Path(profile_root) / "local" / "war_room"
         d.mkdir(parents=True, exist_ok=True)

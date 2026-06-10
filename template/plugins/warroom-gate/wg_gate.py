@@ -51,15 +51,24 @@ def gate(response_text="", session_id="", model="", platform="", **_):
             return cleaned if cleaned != response_text.rstrip() else None
 
         threshold = cfg["min_confidence"] / 100.0
-        decision = wg_policy.decide(True, env, threshold)
-        wg_audit.log(root, decision, conf, "claim", response_text, verdict="claim")
-
-        if decision.action == wg_policy.PASS:
-            out = wg_render.with_badge(body, env.conf, cfg["show_badge"]) if env is not None else body
-            return out if out != response_text else None
-
+        sev = env.sev if env is not None else "default"
+        decision = wg_policy.decide(
+            True, env, threshold, severity_thresholds=cfg["severity_thresholds"])
         conf_pct = int(round(env.conf * 100)) if env is not None else None
-        return wg_render.abstention(decision, conf_pct, cfg["min_confidence"])
+        floor_pct = int(round(
+            wg_policy.resolve_floor(sev, threshold, cfg["severity_thresholds"]) * 100))
+
+        if decision.action != wg_policy.PASS:
+            wg_audit.log(root, decision, conf, "claim", response_text,
+                         verdict="claim", extra={"sev": sev, "verify": "none"})
+            return wg_render.abstention(decision, conf_pct, floor_pct)
+
+        # PASS so far. The verifier handshake (Task 6) composes here; in Phase 1
+        # there is no verifier, so `verify` is "none".
+        wg_audit.log(root, decision, conf, "claim", response_text,
+                     verdict="claim", extra={"sev": sev, "verify": "none"})
+        out = wg_render.with_badge(body, env.conf, cfg["show_badge"]) if env is not None else body
+        return out if out != response_text else None
     except Exception:
         # FAIL CLOSED: never propagate (Hermes would pass the ungated text).
         try:
