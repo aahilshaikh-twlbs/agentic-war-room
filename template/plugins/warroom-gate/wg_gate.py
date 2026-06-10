@@ -39,14 +39,20 @@ def gate(response_text="", session_id="", model="", platform="", **_):
         env, body = wg_envelope.parse_last_line(response_text)
         claim = wg_classify.is_claim(body if env is not None else response_text)
 
+        conf = env.conf if env is not None else None
         if not claim:
+            # Log the chatter decision (verdict=chatter) so under-gating is no
+            # longer invisible. decide(False, ...) returns Decision(PASS,
+            # "chatter") without reading env or threshold (wg_policy.py:20-21);
+            # constructed directly to avoid a meaningless threshold argument.
+            wg_audit.log(root, wg_policy.Decision(wg_policy.PASS, "chatter"),
+                         conf, "chatter", response_text, verdict="chatter")
             cleaned = wg_envelope.strip_stray_envelopes(response_text).rstrip()
             return cleaned if cleaned != response_text.rstrip() else None
 
         threshold = cfg["min_confidence"] / 100.0
         decision = wg_policy.decide(True, env, threshold)
-        conf = env.conf if env is not None else None
-        wg_audit.log(root, decision, conf, "claim", response_text)
+        wg_audit.log(root, decision, conf, "claim", response_text, verdict="claim")
 
         if decision.action == wg_policy.PASS:
             out = wg_render.with_badge(body, env.conf, cfg["show_badge"]) if env is not None else body

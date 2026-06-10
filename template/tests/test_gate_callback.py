@@ -67,3 +67,29 @@ def test_register_wires_transform_llm_output():
 
     wg_gate.register(Ctx())
     assert "transform_llm_output" in seen
+
+
+def test_chatter_branch_now_logs_verdict_chatter(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(_profile(tmp_path)))
+    # chatter -> gate returns None, but it MUST now write a verdict=chatter line.
+    assert wg_gate.gate(response_text="thanks!") is None
+    logf = tmp_path / "local" / "war_room" / "gate.log"
+    assert logf.is_file(), "chatter branch must log so under-gating is visible"
+    line = logf.read_text()
+    assert "verdict=chatter" in line
+    assert "reason=chatter" in line
+    assert "matched=thanks" in line
+
+
+def test_claim_branch_logs_verdict_claim(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(_profile(tmp_path)))
+    wg_gate.gate(response_text="The fix is api/pay.py:88.\n⟦conf=0.88 grounded=tool,file missing=none⟧")
+    line = (tmp_path / "local" / "war_room" / "gate.log").read_text()
+    assert "verdict=claim" in line
+    assert "api/pay.py" not in line     # body never logged, only its hash
+
+
+def test_chatter_log_does_not_change_return_value(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(_profile(tmp_path)))
+    # A bare ack is unchanged after stray-envelope strip -> still returns None.
+    assert wg_gate.gate(response_text="ok") is None
