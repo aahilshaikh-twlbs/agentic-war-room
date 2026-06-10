@@ -207,10 +207,41 @@ def patch_war_room_block(profile_root, board=None, **overrides):
     cfg = Path(profile_root) / "config.yaml"
     text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
 
+    # Whether ANY DEFCON / severity surface is configured. When nothing is set,
+    # the default-valued DEFCON scalars (severity_inference="explicit",
+    # verifier_timeout_s=30) are omitted too, so a non-DEFCON profile renders the
+    # EXACT pre-DEFCON block bytes (D2 / spec §2 "render exactly today's block").
+    _defcon_on = bool(
+        (isinstance(values.get("severity_thresholds"), dict)
+         and values.get("severity_thresholds"))
+        or (values.get("require_verifier_at") or "")
+        or (values.get("verifier_label") or "")
+        or (values.get("escalate_at") or "")
+    )
+    # DEFCON scalar keys that carry a non-empty default; omit them at their
+    # default UNLESS some DEFCON surface is configured (then render the full set
+    # so the operator sees the active knobs).
+    _defcon_default_scalars = {"severity_inference": "explicit",
+                               "verifier_timeout_s": 30}
+
     lines = [_WR_BEGIN, "war_room:"]
     for key in schema.WAR_ROOM_KEYS:
         val = values.get(key)
+        if key == "severity_thresholds":
+            # The one nested case: a dict renders as an indented sub-mapping;
+            # an empty/missing dict is omitted entirely (zero-byte change for
+            # non-DEFCON profiles). Keys render in sorted order for stability.
+            if isinstance(val, dict) and val:
+                lines.append("  severity_thresholds:")
+                for sk in sorted(val):
+                    lines.append("    %s: %s" % (sk, _yaml_scalar(val[sk])))
+            continue
         if val is None or (isinstance(val, str) and val == ""):
+            continue
+        # Omit a default-valued DEFCON scalar when no DEFCON surface is on, so the
+        # block stays byte-identical to the pre-DEFCON render for plain profiles.
+        if (not _defcon_on and key in _defcon_default_scalars
+                and val == _defcon_default_scalars[key]):
             continue
         lines.append("  %s: %s" % (key, _yaml_scalar(val)))
     lines.append(_WR_END)

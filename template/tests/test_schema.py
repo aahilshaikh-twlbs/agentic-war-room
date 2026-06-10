@@ -6,6 +6,8 @@ def test_war_room_keys_exact():
     assert schema.WAR_ROOM_KEYS == (
         "enabled", "board", "parent", "label", "role", "min_confidence",
         "gate_action", "enforce", "show_confidence_badge",
+        "severity_thresholds", "severity_inference", "require_verifier_at",
+        "verifier_label", "verifier_timeout_s", "escalate_at",
     )
 
 
@@ -23,6 +25,22 @@ def test_defaults_cover_war_room_keys():
     assert schema.DEFAULTS["gate_action"] == "abstain"
     assert schema.DEFAULTS["enforce"] is False
     assert schema.DEFAULTS["show_confidence_badge"] is True
+
+
+def test_defcon_defaults_present_and_safe():
+    # All DEFCON keys default OFF / empty so an un-upgraded profile behaves
+    # exactly as before: no severity table, no verifier path, no escalation.
+    assert schema.DEFAULTS["severity_thresholds"] == {}
+    assert schema.DEFAULTS["severity_inference"] == "explicit"
+    assert schema.DEFAULTS["require_verifier_at"] == ""
+    assert schema.DEFAULTS["verifier_label"] == ""
+    assert schema.DEFAULTS["verifier_timeout_s"] == 30
+    assert schema.DEFAULTS["escalate_at"] == ""
+
+
+def test_role_vocab_documents_verifier():
+    # role stays a free scalar; verifier is the new sanctioned value.
+    assert "verifier" in schema.ROLE_VOCAB and "contributor" in schema.ROLE_VOCAB
 
 
 def test_mailbox_defaults_cover_mailbox_keys():

@@ -7,14 +7,24 @@ installer all read from here so they cannot drift.
 """
 import re
 
-# Ordered key set for the sentinel-managed war_room config block. `parent` is
-# the optional federation link (multi-board federation spec, 2026-06-09):
-# blank/absent => standalone root board. It renders only when non-empty, so
-# non-federated profiles keep the exact pre-federation block bytes.
+# Ordered key set for the sentinel-managed war_room config block. The DEFCON /
+# severity keys (severity_thresholds .. escalate_at) are all optional. They render
+# only when the feature is configured: severity_thresholds={} is omitted, the ""
+# scalars are omitted, and the default-valued DEFCON scalars
+# (severity_inference="explicit", verifier_timeout_s=30) are omitted too UNLESS a
+# DEFCON surface is set (see the renderer's _defcon_on guard in setup.py). So a
+# non-DEFCON profile keeps the EXACT pre-DEFCON block bytes.
 WAR_ROOM_KEYS = (
     "enabled", "board", "parent", "label", "role", "min_confidence",
     "gate_action", "enforce", "show_confidence_badge",
+    "severity_thresholds", "severity_inference", "require_verifier_at",
+    "verifier_label", "verifier_timeout_s", "escalate_at",
 )
+
+# Sanctioned war_room.role values. `verifier` (DEFCON / severity spec) names an
+# agent that services verification requests; `contributor` is the default. Other
+# values are tolerated (free scalar) but these are documented.
+ROLE_VOCAB = ("contributor", "verifier")
 
 # Ordered key set for the top-level mailbox routing block (locked decision #1:
 # routing lives in config.yaml, not .env).
@@ -32,6 +42,13 @@ DEFAULTS = {
     "gate_action": "abstain",
     "enforce": False,
     "show_confidence_badge": True,
+    # --- DEFCON / severity (all optional; OFF/empty by default) ---
+    "severity_thresholds": {},     # {} => default-only floor from min_confidence
+    "severity_inference": "explicit",
+    "require_verifier_at": "",     # "" => never require a verifier
+    "verifier_label": "",
+    "verifier_timeout_s": 30,
+    "escalate_at": "",             # "" => never auto-escalate (orchestrator-driven)
 }
 
 # Safe defaults for the mailbox block. Empty strings mean "use the mailbox
