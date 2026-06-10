@@ -7,6 +7,8 @@ the contract the skill must keep even if someone re-pins the hash.
 import hashlib
 from pathlib import Path
 
+from warroom_setup import schema
+
 SKILL = (Path(__file__).resolve().parent.parent
          / "skills" / "warroom-verifier" / "SKILL.md")
 
@@ -39,6 +41,11 @@ def test_skill_documents_protocol_and_verbs():
 
 
 def test_skill_is_employer_free():
-    text = SKILL.read_text(encoding="utf-8").lower()
-    for forbidden in ("twelvelabs", "twelve labs", "@twelvelabs"):
-        assert forbidden not in text
+    # Guard by SHAPE via the canonical blocklist (schema.BLOCKED_VALUES_REGEX),
+    # exactly like test_schema.py / test_assimilate.py. We do NOT inline the
+    # employer NAME here: those literals live only in external --name config /
+    # SANITIZATION.md (never committed), so the repo-wide employer-name grep
+    # (handoff gate) stays empty. The name itself is covered by that gate +
+    # sanitize_check.py over the whole tree.
+    text = SKILL.read_text(encoding="utf-8")
+    assert schema.BLOCKED_VALUES_REGEX.search(text) is None
