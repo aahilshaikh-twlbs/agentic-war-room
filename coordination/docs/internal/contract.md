@@ -581,11 +581,17 @@ no `scope` ⇒ local message, flat boards behave exactly as v1.
 Board refs accept an exact board id or a bare name (`org` ⇒ `named-org`).
 
 ### Extended ops
-- `send(..., scope="local")` — validates scope; escalate/broadcast posts are
-  audited to `<state_dir>/federation.log` as `send scope=… board=… from=…
-  body_sha=<sha256[:8]>` (bodies are hashed, never logged). Broadcasts fan
-  out copies to push-mode descendant boards (`origin_message_id` dedup; no
-  retroactive re-delivery on re-parent).
+- `send(..., scope="local")` — validates scope (`{"error": "bad-scope: …"}` on a
+  bad value); escalate/broadcast posts are audited to `<state_dir>/federation.log`
+  as `send scope=… board=… from=… body_sha=<sha256[:8]>` (bodies are hashed,
+  never logged). A `broadcast` send fans materialized LOCAL copies out to every
+  descendant board in `delivery: push` mode (`from_label`/`created` preserved;
+  `origin_message_id` carries the source id; dedup is on `origin_message_id` so a
+  replay after a topology edit delivers nothing — no retroactive re-delivery).
+  The return is `{"id": …}` plus `{"delivered": [board_id, …]}` ONLY when at least
+  one push copy was written (v1 callers asserting the bare `{"id": …}` shape are
+  unaffected). `poll_inbox` suppresses the read-time broadcast path for a session's
+  push boards so a pushed message is never double-delivered.
 - `poll_inbox(session_id, federated=True)` — federated view: own boards +
   descendants' escalations + ancestors' broadcasts; every row is annotated
   with `origin_board` + `direction` (`"local"|"up"|"down"`). Push-mode boards
