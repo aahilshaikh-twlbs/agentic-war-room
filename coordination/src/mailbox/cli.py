@@ -55,7 +55,11 @@ def _add_fed_flags(sp):
                    help="restrict to own boards (no federation)")
 
 
-def _print_inbox(messages: list) -> None:
+def _print_inbox(messages: list, as_json: bool = False) -> None:
+    if as_json:
+        import json
+        print(json.dumps(messages))
+        return
     if not messages:
         print("(no messages)")
         return
@@ -237,6 +241,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("inbox")
     _add_fed_flags(sp)
+    sp.add_argument("--json", dest="as_json", action="store_true",
+                    help="emit inbox messages as a JSON array (machine-readable)")
 
     sp = sub.add_parser("claims")
     sp.add_argument("--mine", action="store_true")
@@ -393,7 +399,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(data["error"], file=sys.stderr)
         return 1
     if cmd == "inbox":
-        _print_inbox(data or [])
+        _print_inbox(data or [], as_json=getattr(args, "as_json", False))
     elif cmd == "tree":
         _print_tree(data or {})
     elif cmd == "fleet":
