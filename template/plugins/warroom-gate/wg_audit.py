@@ -39,7 +39,11 @@ def log(profile_root, decision, conf, kind, text, verdict=None):
         digest = hashlib.sha256(t.encode("utf-8")).hexdigest()
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         conf_s = "-" if conf is None else ("%.2f" % conf)
-        matched = wg_classify.matched_chatter(t) or "none"
+        # Multi-word _CHATTER tokens ("got it", "on it", "thank you") would
+        # otherwise embed a space and break the whitespace-delimited key=value
+        # contract (the parser's line.split() would split the token in two).
+        # Encode any internal space as "_" so matched= stays one clean field.
+        matched = (wg_classify.matched_chatter(t) or "none").replace(" ", "_")
         ends_q = "1" if t.rstrip().endswith("?") else "0"
         multiline = "1" if "\n" in t else "0"
         verdict_tok = "" if verdict is None else ("verdict=%s " % verdict)

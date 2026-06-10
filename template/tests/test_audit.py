@@ -99,3 +99,24 @@ def test_log_file_still_0600_with_extension(tmp_path):
 def test_log_never_raises_with_extension_on_bad_root(tmp_path):
     A.log(tmp_path / "nope" / "x", P.Decision(P.PASS, "ok"), None,
           "chatter", "anything", verdict="chatter")
+
+
+def test_log_multiword_matched_token_stays_one_space_free_field(tmp_path):
+    # "got it" is a real multi-word _CHATTER token. Its space would otherwise
+    # break the whitespace-delimited key=value contract: line.split() +
+    # tok.partition("=") would record matched="got" and drop a bare "it" token.
+    # The writer encodes the internal space as "_" so the field stays atomic.
+    A.log(tmp_path, P.Decision(P.PASS, "chatter"), None, "chatter", "got it",
+          verdict="chatter")
+    line = (tmp_path / "local" / "war_room" / "gate.log").read_text()
+    assert "matched=got_it" in line
+    # Parse exactly as gate_review.parse_line does (split on whitespace).
+    parsed = {}
+    for tok in line.split():
+        if "=" in tok:
+            k, _sep, v = tok.partition("=")
+            parsed[k] = v
+    assert parsed["matched"] == "got_it"   # whole token preserved, not "got"
+    assert "it" not in line.split()        # no orphaned bare "it" token
+    full = hashlib.sha256("got it".encode("utf-8")).hexdigest()
+    assert parsed["sha256"] == full        # sha256 survives intact, not by luck
