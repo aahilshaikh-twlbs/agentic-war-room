@@ -781,11 +781,19 @@ class MailboxEngine:
         if federated:
             for b in boards:
                 fed_up.update(boards_mod.descendants(self.boards, b))
-                if (self.boards.get(b) or {}).get("delivery") == "push":
-                    # push boards receive materialized copies at send time;
-                    # skipping the read-time broadcast path prevents doubles.
-                    continue
                 fed_down.update(boards_mod.ancestors(self.boards, b))
+        # Per-message push suppression (not per-board): a broadcast is skipped
+        # at read time only when a local push copy of it already exists on one
+        # of this session's boards. This prevents the double delivery for
+        # broadcasts materialized after the board went push, while still letting
+        # NEVER-materialized broadcasts (sent while the board was pull, or
+        # before it was linked under the ancestor) fall through the normal
+        # read-time path — otherwise they would be silently dropped.
+        pushed_origins = {
+            m.origin_message_id
+            for m in self.messages.values()
+            if m.origin_message_id and m.board in boards
+        }
         label = presence.label
         matched = []
         directions = {}
@@ -797,6 +805,10 @@ class MailboxEngine:
             elif msg.board in fed_down and msg.scope == "broadcast":
                 direction = "down"
             else:
+                continue
+            if direction == "down" and msg.id in pushed_origins:
+                # a materialized push copy already delivers this broadcast
+                # locally; suppress the read-time duplicate.
                 continue
             if msg.from_session == session_id:
                 continue

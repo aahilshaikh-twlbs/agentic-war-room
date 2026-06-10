@@ -821,6 +821,34 @@ def test_poll_inbox_push_board_receives_exactly_once(engine, tmp_path):
     assert hits[0]["origin_message_id"] == sent["id"]
 
 
+def test_poll_inbox_delivers_pre_push_broadcast_after_switch(engine, tmp_path):
+    # Regression: a broadcast sent while the board is still PULL is never
+    # materialized by _push_broadcast. Switching the board to push must not
+    # retroactively suppress that unread broadcast at read time — per-message
+    # (not per-board) suppression keeps it deliverable exactly once, while the
+    # post-switch broadcast still arrives only via its materialized copy.
+    _setup_tree(engine, tmp_path)
+    engine.poll_inbox("s_api")                  # drain join notes
+    early = engine.send(session_id="s_org", to="*", kind="note",
+                        body="EARLY", scope="broadcast")   # board still pull
+    assert "delivered" not in early             # nothing materialized yet
+    engine.set_delivery("squad-api", "push")
+    late = engine.send(session_id="s_org", to="*", kind="note",
+                       body="LATE", scope="broadcast")
+    assert late["delivered"] == ["named-squad-api"]
+    inbox = engine.poll_inbox("s_api")
+    bodies = sorted(m["body"] for m in inbox)
+    assert bodies == ["EARLY", "LATE"]          # EARLY not dropped
+    early_hits = [m for m in inbox if m["body"] == "EARLY"]
+    late_hits = [m for m in inbox if m["body"] == "LATE"]
+    assert len(early_hits) == 1                 # delivered exactly once
+    assert early_hits[0]["direction"] == "down"  # via read-time path
+    assert len(late_hits) == 1                  # no double for push-era msg
+    assert late_hits[0]["direction"] == "local"  # via materialized copy
+    # idempotent: a second poll surfaces neither again
+    assert engine.poll_inbox("s_api") == []
+
+
 def test_cli_set_delivery_verb(tmp_home, monkeypatch, capsys):
     monkeypatch.delenv("MAILBOX_SESSION_ID", raising=False)
     client.ensure_running()
