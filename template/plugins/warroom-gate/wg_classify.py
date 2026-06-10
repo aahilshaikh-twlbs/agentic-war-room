@@ -29,3 +29,21 @@ def is_claim(text):
     # "payments are failing", "db is corrupted") are claims and MUST be gated.
     # See spec — any length short-circuit is a bug, not a convenience.
     return True
+
+
+def matched_chatter(text):
+    # type: (str) -> object
+    """Return the exact _CHATTER token `text` normalizes to, else None.
+
+    Read-only audit helper for gate.log's `matched=` field. Mirrors the EXACT
+    normalization is_claim() uses (lower(), strip(" .!👍✅"), _CHATTER membership)
+    so a logged token is always a real, public _CHATTER entry. It never changes
+    classification -- is_claim() is the sole authority on claim vs chatter.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    low = t.lower().strip(" .!👍✅")
+    if low in _CHATTER:
+        return low
+    return None
