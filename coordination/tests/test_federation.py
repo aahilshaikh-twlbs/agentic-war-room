@@ -372,3 +372,82 @@ def test_escalate_audit_logs_sha_never_body(engine, tmp_path):
     assert "secret-incident-details" not in text
     sha = hashlib.sha256(b"secret-incident-details").hexdigest()[:8]
     assert "body_sha=" + sha in text
+
+
+# ---------------------------------------------------------------------------
+# T5 — federated poll_inbox + subtree-aware join colocation
+# ---------------------------------------------------------------------------
+
+
+def test_poll_inbox_federated_up_and_down(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.poll_inbox("s_org")          # drain any join notes
+    engine.poll_inbox("s_api")
+    engine.send(session_id="s_api", to="*", kind="note",
+                body="api incident", scope="escalate")
+    engine.send(session_id="s_org", to="*", kind="note",
+                body="org announcement", scope="broadcast")
+
+    org_inbox = engine.poll_inbox("s_org")
+    up = [m for m in org_inbox if m["body"] == "api incident"]
+    assert len(up) == 1
+    assert up[0]["direction"] == "up"
+    assert up[0]["origin_board"] == "named-squad-api"
+
+    api_inbox = engine.poll_inbox("s_api")
+    down = [m for m in api_inbox if m["body"] == "org announcement"]
+    assert len(down) == 1
+    assert down[0]["direction"] == "down"
+    assert down[0]["origin_board"] == "named-org"
+
+
+def test_poll_inbox_local_flag_excludes_federated(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.poll_inbox("s_org")
+    engine.send(session_id="s_api", to="*", kind="note",
+                body="api incident", scope="escalate")
+    local_only = engine.poll_inbox("s_org", federated=False)
+    assert all(m["body"] != "api incident" for m in local_only)
+    # not consumed by the local read: the federated read still delivers it
+    fed = engine.poll_inbox("s_org")
+    assert any(m["body"] == "api incident" for m in fed)
+
+
+def test_poll_inbox_federated_respects_read_receipts(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.poll_inbox("s_org")
+    engine.send(session_id="s_api", to="*", kind="note",
+                body="once only", scope="escalate")
+    first = engine.poll_inbox("s_org")
+    assert any(m["body"] == "once only" for m in first)
+    second = engine.poll_inbox("s_org")
+    assert all(m["body"] != "once only" for m in second)
+
+
+def test_poll_inbox_sibling_and_plain_local_invisible(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.poll_inbox("s_web")
+    engine.poll_inbox("s_org")
+    engine.send(session_id="s_api", to="*", kind="note",
+                body="api incident", scope="escalate")
+    engine.send(session_id="s_api", to="*", kind="note", body="api local")
+    web_inbox = engine.poll_inbox("s_web")          # sibling: sees neither
+    assert all(m["body"] not in ("api incident", "api local")
+               for m in web_inbox)
+    org_inbox = engine.poll_inbox("s_org")          # ancestor: escalate only
+    assert all(m["body"] != "api local" for m in org_inbox)
+
+
+def test_join_colocation_counts_subtree_peers(engine, tmp_path):
+    engine.create_board("org")
+    engine.create_board("squad-api", parent="org")
+    d1 = tmp_path / "child"
+    d1.mkdir()
+    d2 = tmp_path / "parent"
+    d2.mkdir()
+    engine.join(session_id="s_child", label="squad-sh", cwd=str(d1),
+                board_name="squad-api")
+    res = engine.join(session_id="s_parent", label="org-sh", cwd=str(d2),
+                      board_name="org")
+    # the parent-board joiner sees the child-board member in its summary
+    assert res["colocated"].get("named-org") == ["squad-sh"]

@@ -158,11 +158,15 @@ class MailboxEngine:
         colocated = {}
         if newly_created or was_offline:
             for bid in board_list:
+                # Federated colocation: a joiner on a parent board counts the
+                # live fleet across its subtree (presence rolls UP only). With
+                # no children this is exactly the v1 single-board check.
+                sub = set(boards_mod.subtree(self.boards, bid))
                 others = []
                 for other in self.presence.values():
                     if other.session_id == session_id:
                         continue
-                    if bid in other.boards and self._is_live(other):
+                    if (sub & set(other.boards)) and self._is_live(other):
                         others.append(other.label)
                 if others:
                     colocated[bid] = others
@@ -625,15 +629,30 @@ class MailboxEngine:
         return out
 
     # ----- poll_inbox -----
-    def poll_inbox(self, session_id):
+    def poll_inbox(self, session_id, federated=True):
         presence = self.presence.get(session_id)
         if presence is None:
             return []
         boards = set(presence.boards)
+        # Federated view (D2: federated by default; degenerates to the v1
+        # local behavior when no board has a parent or children).
+        fed_up = set()       # boards whose ESCALATIONS this session sees
+        fed_down = set()     # boards whose BROADCASTS this session sees
+        if federated:
+            for b in boards:
+                fed_up.update(boards_mod.descendants(self.boards, b))
+                fed_down.update(boards_mod.ancestors(self.boards, b))
         label = presence.label
         matched = []
+        directions = {}
         for msg in self.messages.values():
-            if msg.board not in boards:
+            if msg.board in boards:
+                direction = "local"
+            elif msg.board in fed_up and msg.scope == "escalate":
+                direction = "up"
+            elif msg.board in fed_down and msg.scope == "broadcast":
+                direction = "down"
+            else:
                 continue
             if msg.from_session == session_id:
                 continue
@@ -641,12 +660,16 @@ class MailboxEngine:
                 continue
             if msg.to == "*" or msg.to == session_id or msg.to == label:
                 matched.append(msg)
+                directions[msg.id] = direction
         matched.sort(key=lambda m: m.created)
         result = []
         for msg in matched:
             msg.read_by.append(session_id)
             self._persist_message(msg)
-            result.append(msg.to_dict())
+            d = msg.to_dict()
+            d["origin_board"] = msg.board
+            d["direction"] = directions[msg.id]
+            result.append(d)
         return result
 
     # ----- request_release -----
