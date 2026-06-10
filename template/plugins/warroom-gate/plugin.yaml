@@ -1,4 +1,4 @@
 name: warroom-gate
 kind: standalone
-version: 0.1.0
+version: 0.2.0
 description: "War-room confidence gate: suppresses ungrounded/low-confidence claims before they reach the channel."

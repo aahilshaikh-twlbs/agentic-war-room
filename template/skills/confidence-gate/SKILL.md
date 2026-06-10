@@ -35,3 +35,25 @@ Federation note: on a federated board tree, `mailbox escalate "<msg>"` /
 of your home board see the post). An escalated claim is still a claim: it
 keeps its confidence envelope and gates exactly like a local post. Never
 escalate to dodge the gate — abstain loudly instead.
+
+## Severity (DEFCON) and the independent verifier
+
+Tag a claim's severity in the envelope's optional trailing `sev=` field:
+
+    ⟦conf=0.97 grounded=tool,file missing=none sev=alert1⟧
+
+- `sev` is one of `alert1` (highest) > `alert2` > `alert3` > `default`. Omit it
+  for ordinary claims (treated as `default`). Tag honestly: a higher severity
+  only raises your own bar, it never lowers it.
+- Higher severity demands a higher confidence floor (`war_room.severity_thresholds`).
+  A claim that clears the baseline but not its alert floor is held back — abstain
+  loudly and state the gap.
+- At/above `war_room.require_verifier_at` (default top tier only), clearing the
+  floor is necessary but not sufficient: the gate asks a second agent (the
+  configured `verifier_label`) to independently confirm before your claim posts.
+  If no signed verdict arrives in time, the gate holds the claim back. This is
+  correct — a top-severity claim with no second signoff does not post.
+
+You never run the handshake by hand; the gate does it. Your job is to tag `sev=`
+honestly and ground the claim well enough that an adversarial second agent can
+confirm it.
