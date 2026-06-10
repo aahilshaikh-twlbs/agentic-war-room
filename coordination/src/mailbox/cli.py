@@ -35,14 +35,40 @@ def _lane_name(arg: str) -> str:
     return arg
 
 
+# Topology verbs run without a session id (operator commands, not session
+# ops). fleet (Phase 2) resolves a session's board only when one is present.
+_SESSION_OPTIONAL_CMDS = {"create-board", "set-parent", "tree"}
+
+# New-verb error contract: an {"error": ...} data dict exits 1 with the error
+# on stderr. Existing v1 verbs keep their print-the-dict behavior unchanged.
+_FEDERATION_CMDS = {"create-board", "set-parent", "tree",
+                    "escalate", "broadcast"}
+
+
+def _add_fed_flags(sp):
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--federated", dest="federated", action="store_true",
+                   default=True,
+                   help="federated view across the board tree (default)")
+    g.add_argument("--local", dest="federated", action="store_false",
+                   help="restrict to own boards (no federation)")
+
+
 def _print_inbox(messages: list) -> None:
     if not messages:
         print("(no messages)")
         return
     for m in messages:
-        print("[%s] from %s: %s" % (
+        direction = m.get("direction")
+        origin = ""
+        if direction == "up":
+            origin = " (^ escalated from %s)" % m.get("origin_board", "?")
+        elif direction == "down":
+            origin = " (v broadcast from %s)" % m.get("origin_board", "?")
+        print("[%s] from %s%s: %s" % (
             m.get("kind", "note"),
             m.get("from_label", "?"),
+            origin,
             m.get("body", ""),
         ))
 
@@ -88,6 +114,27 @@ def _print_ps(rows: list) -> None:
         ))
 
 
+def _print_tree(data: dict) -> None:
+    roots = data.get("roots", []) if isinstance(data, dict) else []
+    if not roots:
+        print("(no boards)")
+        return
+
+    def _walk(node, indent):
+        line = "%s%s" % (indent, node.get("id", "?"))
+        name = node.get("name")
+        if name:
+            line += "  (%s)" % name
+        if node.get("orphan"):
+            line += "  [orphan: parent missing]"
+        print(line)
+        for child in node.get("children", []):
+            _walk(child, indent + "    ")
+
+    for root in roots:
+        _walk(root, "")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mailbox")
     p.add_argument("--session", default=None)
@@ -125,8 +172,34 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("body")
     sp.add_argument("--to", default="*")
     sp.add_argument("--kind", default="note")
+    sp.add_argument("--scope", default="local",
+                    choices=["local", "escalate", "broadcast"])
 
-    sub.add_parser("inbox")
+    # Federation verbs (multi-board federation spec, 2026-06-09).
+    sp = sub.add_parser("escalate")
+    sp.add_argument("body")
+    sp.add_argument("--to", default="*")
+    sp.add_argument("--kind", default="note")
+
+    sp = sub.add_parser("broadcast")
+    sp.add_argument("body")
+    sp.add_argument("--to", default="*")
+    sp.add_argument("--kind", default="note")
+
+    sp = sub.add_parser("create-board")
+    sp.add_argument("name")
+    sp.add_argument("--parent", default=None)
+
+    sp = sub.add_parser("set-parent")
+    sp.add_argument("board")
+    sp.add_argument("parent", nargs="?", default=None)
+    sp.add_argument("--detach", action="store_true")
+
+    sp = sub.add_parser("tree")
+    sp.add_argument("board", nargs="?", default=None)
+
+    sp = sub.add_parser("inbox")
+    _add_fed_flags(sp)
 
     sp = sub.add_parser("claims")
     sp.add_argument("--mine", action="store_true")
@@ -148,12 +221,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.print_help(sys.stderr)
         return 1
 
+    cmd = args.cmd
+
     session_id = _resolve_session(args)
-    if not session_id:
+    if not session_id and cmd not in _SESSION_OPTIONAL_CMDS:
         print("no session id (run inside a Claude session)", file=sys.stderr)
         return 1
-
-    cmd = args.cmd
 
     if cmd == "join":
         op = "join"
@@ -212,10 +285,34 @@ def main(argv: Optional[List[str]] = None) -> int:
             "to": args.to,
             "kind": args.kind,
             "body": args.body,
+            "scope": args.scope,
         }
+    elif cmd in ("escalate", "broadcast"):
+        op = "send"
+        op_args = {
+            "session_id": session_id,
+            "to": args.to,
+            "kind": args.kind,
+            "body": args.body,
+            "scope": cmd,
+        }
+    elif cmd == "create-board":
+        op = "create_board"
+        op_args = {"name": args.name, "parent": args.parent}
+    elif cmd == "set-parent":
+        if not args.detach and args.parent is None:
+            print("set-parent: pass a parent board or --detach",
+                  file=sys.stderr)
+            return 1
+        op = "set_parent"
+        op_args = {"board": args.board, "parent": args.parent,
+                   "detach": args.detach}
+    elif cmd == "tree":
+        op = "tree"
+        op_args = {"board": args.board}
     elif cmd == "inbox":
         op = "poll_inbox"
-        op_args = {"session_id": session_id}
+        op_args = {"session_id": session_id, "federated": args.federated}
     elif cmd == "claims":
         if args.all:
             scope = "all"
@@ -245,8 +342,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     data = resp.get("data")
+    if (cmd in _FEDERATION_CMDS and isinstance(data, dict)
+            and data.get("error")):
+        print(data["error"], file=sys.stderr)
+        return 1
     if cmd == "inbox":
         _print_inbox(data or [])
+    elif cmd == "tree":
+        _print_tree(data or {})
     elif cmd == "claims":
         _print_claims(data or [])
     elif cmd == "list-lanes":

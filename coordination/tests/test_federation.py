@@ -451,3 +451,121 @@ def test_join_colocation_counts_subtree_peers(engine, tmp_path):
                       board_name="org")
     # the parent-board joiner sees the child-board member in its summary
     assert res["colocated"].get("named-org") == ["squad-sh"]
+
+
+# ---------------------------------------------------------------------------
+# T6 — CLI verbs (real daemon round-trips via tmp_home)
+# ---------------------------------------------------------------------------
+
+from mailbox import cli, client
+
+
+def test_cli_topology_verbs_need_no_session(tmp_home, monkeypatch, capsys):
+    monkeypatch.delenv("MAILBOX_SESSION_ID", raising=False)
+    client.ensure_running()
+    assert cli.main(["create-board", "org"]) == 0
+    assert cli.main(["create-board", "team-platform", "--parent", "org"]) == 0
+    assert cli.main(["create-board", "squad-api",
+                     "--parent", "team-platform"]) == 0
+    capsys.readouterr()
+    assert cli.main(["tree"]) == 0
+    out = capsys.readouterr().out
+    assert "named-org  (org)" in out
+    assert "    named-team-platform  (team-platform)" in out
+    assert "        named-squad-api  (squad-api)" in out
+    # re-parent + detach round-trip
+    assert cli.main(["set-parent", "squad-api", "org"]) == 0
+    assert cli.main(["set-parent", "squad-api", "--detach"]) == 0
+
+
+def test_cli_create_board_bad_parent_exits_1(tmp_home, monkeypatch, capsys):
+    monkeypatch.delenv("MAILBOX_SESSION_ID", raising=False)
+    client.ensure_running()
+    rc = cli.main(["create-board", "squad-api", "--parent", "ghost"])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "no-such-board: ghost" in captured.err
+
+
+def test_cli_set_parent_requires_parent_or_detach(tmp_home, monkeypatch, capsys):
+    monkeypatch.delenv("MAILBOX_SESSION_ID", raising=False)
+    rc = cli.main(["set-parent", "org"])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "pass a parent board or --detach" in captured.err
+
+
+def test_cli_escalate_inbox_annotation_and_local_flag(
+        tmp_home, tmp_path, monkeypatch, capsys):
+    client.ensure_running()
+    assert cli.main(["create-board", "org"]) == 0
+    assert cli.main(["create-board", "squad-api", "--parent", "org"]) == 0
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
+    monkeypatch.chdir(a)
+    assert cli.main(["--session", "s-squad", "join", "--board", "squad-api",
+                     "--label", "squad-sh"]) == 0
+    monkeypatch.chdir(b)
+    assert cli.main(["--session", "s-org", "join", "--board", "org",
+                     "--label", "org-sh"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--session", "s-squad", "escalate", "api outage"]) == 0
+    capsys.readouterr()
+    # --local first: the escalation is NOT delivered (and NOT consumed)
+    assert cli.main(["--session", "s-org", "inbox", "--local"]) == 0
+    out_local = capsys.readouterr().out
+    assert "api outage" not in out_local
+    # federated default: delivered with the origin annotation
+    assert cli.main(["--session", "s-org", "inbox"]) == 0
+    out_fed = capsys.readouterr().out
+    assert "api outage" in out_fed
+    assert "escalated from named-squad-api" in out_fed
+
+
+def test_cli_broadcast_reaches_descendant(tmp_home, tmp_path, monkeypatch,
+                                          capsys):
+    client.ensure_running()
+    assert cli.main(["create-board", "org"]) == 0
+    assert cli.main(["create-board", "squad-api", "--parent", "org"]) == 0
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
+    monkeypatch.chdir(a)
+    assert cli.main(["--session", "s-squad", "join", "--board", "squad-api",
+                     "--label", "squad-sh"]) == 0
+    monkeypatch.chdir(b)
+    assert cli.main(["--session", "s-org", "join", "--board", "org",
+                     "--label", "org-sh"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--session", "s-org", "broadcast", "all hands"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--session", "s-squad", "inbox"]) == 0
+    out = capsys.readouterr().out
+    assert "all hands" in out
+    assert "broadcast from named-org" in out
+
+
+def test_cli_send_scope_flag_equivalent(tmp_home, tmp_path, monkeypatch,
+                                        capsys):
+    client.ensure_running()
+    assert cli.main(["create-board", "org"]) == 0
+    assert cli.main(["create-board", "squad-api", "--parent", "org"]) == 0
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
+    monkeypatch.chdir(a)
+    assert cli.main(["--session", "s-squad", "join", "--board", "squad-api",
+                     "--label", "squad-sh"]) == 0
+    monkeypatch.chdir(b)
+    assert cli.main(["--session", "s-org", "join", "--board", "org",
+                     "--label", "org-sh"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--session", "s-squad", "send", "via send flag",
+                     "--scope", "escalate"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--session", "s-org", "inbox"]) == 0
+    assert "via send flag" in capsys.readouterr().out
