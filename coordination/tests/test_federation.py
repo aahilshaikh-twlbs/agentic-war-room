@@ -857,3 +857,52 @@ def test_cli_set_delivery_verb(tmp_home, monkeypatch, capsys):
     assert cli.main(["set-delivery", "squad-api", "push"]) == 0
     assert cli.main(["set-delivery", "ghost", "push"]) == 1
     assert "no-such-board: ghost" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# T14 — Phase 4: richer tree/fleet render data (members, claims, depth, via_name)
+# ---------------------------------------------------------------------------
+
+
+def test_tree_nodes_carry_members_claims_depth_delivery(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.set_delivery("squad-api", "push")
+    target = str(tmp_path / "cwd2" / "src" / "core.py")
+    engine.claim(session_id="s_api", globs=[target], note="api work")
+    data = engine.tree()
+    org = [n for n in data["roots"] if n["id"] == "named-org"][0]
+    assert org["members"] == 1                       # org-sh on the org board
+    assert org["depth"] == 0
+    team = org["children"][0]
+    assert team["depth"] == 1
+    api = team["children"][0]
+    assert api["id"] == "named-squad-api"
+    assert api["delivery"] == "push"
+    assert api["members"] == 1                        # api-sh
+    assert api["claims"] >= 1                         # the explicit claim above
+    assert api["depth"] == 2
+
+
+def test_tree_node_members_count_excludes_offline(engine, tmp_path):
+    engine.create_board("org")
+    d = tmp_path / "o"
+    d.mkdir()
+    engine.join(session_id="s1", label="org-sh", cwd=str(d), board_name="org")
+    engine.leave("s1")
+    org = [n for n in engine.tree()["roots"] if n["id"] == "named-org"][0]
+    assert org["members"] == 0
+
+
+def test_federated_presence_annotates_via_name(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    rows = engine.federated_presence("named-org")
+    api = [r for r in rows if r["label"] == "api-sh"][0]
+    assert api["via_board"] == "named-squad-api"
+    assert api["via_name"] == "squad-api"             # human name for renders
+
+
+def test_fleet_rows_carry_via_name(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    fl = engine.fleet(board="org")
+    api = [r for r in fl["rows"] if r["label"] == "api-sh"][0]
+    assert api["via_name"] == "squad-api"

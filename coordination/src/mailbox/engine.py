@@ -281,6 +281,22 @@ class MailboxEngine:
 
         seen = set()
 
+        def _members(bid):
+            return sum(
+                1 for p in self.presence.values()
+                if bid in p.boards and p.status != "offline")
+
+        def _claims(bid):
+            # A claim lives on its holder's repo board (never a named board),
+            # so count unreleased claims whose HOLDER is present on `bid` — the
+            # same presence-membership roll-up key federated_claims uses.
+            holders = {
+                p.session_id for p in self.presence.values()
+                if bid in p.boards}
+            return sum(
+                1 for c in self.claims.values()
+                if c.session_id in holders and not c.released)
+
         def _node(bid):
             seen.add(bid)
             meta = self.boards.get(bid, {})
@@ -291,7 +307,11 @@ class MailboxEngine:
                 if self.boards[cid].get("parent") == bid:
                     children.append(_node(cid))
             return {"id": bid, "name": meta.get("name"),
-                    "orphan": bid in orphans, "children": children}
+                    "orphan": bid in orphans,
+                    "delivery": meta.get("delivery") or "pull",
+                    "depth": boards_mod.depth(self.boards, bid),
+                    "members": _members(bid), "claims": _claims(bid),
+                    "children": children}
 
         return {"roots": [_node(r) for r in root_ids]}
 
@@ -695,6 +715,8 @@ class MailboxEngine:
             hit = [b for b in p.boards if b in sub]
             if not hit:
                 continue
+            via = hit[0]
+            via_meta = self.boards.get(via, {})
             rows.append({
                 "session_id": p.session_id,
                 "label": p.label,
@@ -703,7 +725,8 @@ class MailboxEngine:
                 "status": self._status_of(p),
                 "last_seen_seconds": self._now() - p.last_heartbeat,
                 "boards": list(p.boards),
-                "via_board": hit[0],
+                "via_board": via,
+                "via_name": via_meta.get("name"),
             })
         rows.sort(key=lambda r: r["label"])
         return rows
