@@ -140,3 +140,17 @@ def test_escalate_at_surfaced(tmp_path):
     (tmp_path / "config.yaml").write_text(
         "war_room:\n  enforce: true\n  escalate_at: alert2\n")
     assert G.read(tmp_path)["escalate_at"] == "alert2"
+
+
+def test_scan_ignores_unknown_orchestrate_key(tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "war_room:\n"
+        "  enforce: true\n"
+        "  orchestrate: false\n"
+        "  min_confidence: 80\n"
+        "plugins:\n  enabled: true\n"
+    )
+    cfg = G.read(tmp_path)
+    assert cfg["enforce"] is True
+    assert cfg["min_confidence"] == 80
+    assert "orchestrate" not in cfg

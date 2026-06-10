@@ -8,6 +8,7 @@ def test_war_room_keys_exact():
         "gate_action", "enforce", "show_confidence_badge",
         "severity_thresholds", "severity_inference", "require_verifier_at",
         "verifier_label", "verifier_timeout_s", "escalate_at",
+        "orchestrate",
     )
 
 
@@ -81,3 +82,10 @@ def test_blocked_values_regex_misses_clean_template():
     assert not r.search("war_room:\n  board: default\n  role: contributor\n")
     assert not r.search("<<FILL-IN: the one-line default lean>>")
     assert not r.search("permission integer 277025770560")  # 12 digits, not a snowflake
+
+
+def test_orchestrate_key_registered_with_default_on():
+    # L1 escape hatch: config-only, default true, no wizard prompt (OQ3).
+    assert "orchestrate" in schema.WAR_ROOM_KEYS
+    assert schema.WAR_ROOM_KEYS[-1] == "orchestrate"  # appended last; render order
+    assert schema.DEFAULTS["orchestrate"] is True

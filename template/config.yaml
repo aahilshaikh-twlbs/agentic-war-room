@@ -27,6 +27,7 @@ war_room:
   gate_action: abstain
   enforce: false
   show_confidence_badge: true
+  orchestrate: true
 # <<< warroom-managed <<<
 # Cross-agent routing (non-secret). Source of truth for which board this profile
 # joins. `warroom setup` / `warroom enroll` rewrite this sentinel-managed block.

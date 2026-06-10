@@ -251,3 +251,17 @@ def test_severity_block_survives_reanchor_after_reemit(tmp_path):
     assert setup._WR_BEGIN in text and setup._WR_END in text
     assert "    alert1: 90" in text and "alert1: 95" not in text
     assert "bottom: 2" in text
+
+
+def test_orchestrate_renders_true_by_default(tmp_path):
+    cfg = _cfg(tmp_path)
+    setup.patch_war_room_block(tmp_path, "board-x")
+    assert "orchestrate: true" in cfg.read_text(encoding="utf-8")
+
+
+def test_orchestrate_override_renders_false(tmp_path):
+    cfg = _cfg(tmp_path)
+    setup.patch_war_room_block(tmp_path, "board-x", orchestrate=False)
+    text = cfg.read_text(encoding="utf-8")
+    assert "orchestrate: false" in text
+    assert text.count(setup._WR_BEGIN) == 1

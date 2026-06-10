@@ -19,6 +19,7 @@ WAR_ROOM_KEYS = (
     "gate_action", "enforce", "show_confidence_badge",
     "severity_thresholds", "severity_inference", "require_verifier_at",
     "verifier_label", "verifier_timeout_s", "escalate_at",
+    "orchestrate",
 )
 
 # Sanctioned war_room.role values. `verifier` (DEFCON / severity spec) names an
@@ -49,6 +50,7 @@ DEFAULTS = {
     "verifier_label": "",
     "verifier_timeout_s": 30,
     "escalate_at": "",             # "" => never auto-escalate (orchestrator-driven)
+    "orchestrate": True,           # L1 escape hatch: /warroom intake on (OQ3)
 }
 
 # Safe defaults for the mailbox block. Empty strings mean "use the mailbox

@@ -39,3 +39,10 @@ def test_bundle_skill_list_unchanged():
     bundle = (ROOT / "skill-bundles" / "warroom.yaml").read_text()
     skills = re.findall(r"^\s*-\s*([a-z-]+)\s*$", bundle, re.M)
     assert skills == ["warroom", "confidence-gate"]
+
+
+def test_shipped_config_orchestrate_on():
+    cfg = (ROOT / "config.yaml").read_text()
+    m = re.search(r"^war_room:\n((?:[ \t].*\n)*)", cfg, re.M)
+    assert m, "shipped config must carry a war_room block"
+    assert re.search(r"^\s{2}orchestrate:\s*true\s*$", m.group(1), re.M)
