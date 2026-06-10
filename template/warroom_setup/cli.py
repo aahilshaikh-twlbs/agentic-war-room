@@ -23,6 +23,8 @@ def _build_parser():
     e = sub.add_parser("enroll", help="wire this profile onto a cross-agent mailbox board")
     e.add_argument("--board", default=None, help="board name (updates war_room + mailbox blocks)")
     e.add_argument("--label", default=None, help="board label (defaults to handle)")
+    e.add_argument("--parent", default=None,
+                   help="parent board for federation (records the link engine-side)")
     e.add_argument("--status", action="store_true", help="print enrollment JSON + daemon reachability")
     e.add_argument("--reconfigure", action="store_true", help="force re-write even if already enrolled")
     e.add_argument("--dry-run", dest="dry_run", action="store_true", help="resolve + report; write nothing")
@@ -86,7 +88,14 @@ def cmd_enroll(args):
     # --board override keeps war_room.board in sync (decision #13).
     if args.board and not args.dry_run:
         setup.patch_war_room_block(profile_root, board)
-    st = enroll.bootstrap(profile_root, board, label, dry_run=args.dry_run)
+    # parent kwarg only when supplied (keeps legacy-signature bootstrap
+    # monkeypatches in existing tests working unchanged).
+    if args.parent:
+        st = enroll.bootstrap(profile_root, board, label,
+                              dry_run=args.dry_run, parent=args.parent)
+    else:
+        st = enroll.bootstrap(profile_root, board, label,
+                              dry_run=args.dry_run)
     print(json.dumps(st.to_dict(), indent=2, sort_keys=True))
     if st.status == "cli-not-found":
         return 1

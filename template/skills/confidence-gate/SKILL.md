@@ -29,3 +29,9 @@ answer, or any factual claim to a war-room channel:
 Higher severity = stricter bar: treat Alert 1/2 boards as demanding independent
 verification, not just self-scoring. Abstaining loudly is correct war-room
 behavior; confident wrongness is not.
+
+Federation note: on a federated board tree, `mailbox escalate "<msg>"` /
+`mailbox broadcast "<msg>"` change *visibility only* (ancestors / descendants
+of your home board see the post). An escalated claim is still a claim: it
+keeps its confidence envelope and gates exactly like a local post. Never
+escalate to dodge the gate — abstain loudly instead.
