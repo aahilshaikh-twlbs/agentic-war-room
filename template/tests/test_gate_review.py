@@ -70,3 +70,85 @@ def test_main_review_prints_table(tmp_path, capsys):
     assert rc == 0
     assert "verdict" in out and "chatter" in out and "claim" in out
     assert "total: 2" in out
+
+
+import hashlib
+import io
+import json as _json
+
+import pytest
+
+
+def _run_label(monkeypatch, stdin_text, argv):
+    monkeypatch.setattr("sys.stdin", io.StringIO(stdin_text))
+    return GR.main(argv)
+
+
+def test_label_appends_fixture_on_hash_match(tmp_path, monkeypatch):
+    fixtures = tmp_path / "classifier_cases.json"
+    fixtures.write_text("[]\n", encoding="utf-8")
+    logf = tmp_path / "gate.log"
+    original = "rolling back the deploy now"
+    sha = hashlib.sha256(original.encode("utf-8")).hexdigest()
+    logf.write_text(
+        ("2026-06-09T18:00:00+00:00 verdict=chatter action=pass reason=chatter "
+         "conf=- kind=chatter len=s ends_q=0 multiline=0 matched=none sha256=%s\n" % sha),
+        encoding="utf-8")
+    rc = _run_label(monkeypatch, original, [
+        "label", "--log", str(logf), "--sha256", sha,
+        "--expected", "claim", "--note", "FN: action statement passed as chatter",
+        "--fixtures", str(fixtures)])
+    assert rc == 0
+    rows = _json.loads(fixtures.read_text(encoding="utf-8"))
+    assert rows == [{
+        "text": "rolling back the deploy now",
+        "expected_is_claim": True,
+        "note": "FN: action statement passed as chatter",
+    }]
+    # the original text must NOT have been written into the log
+    assert "rolling back the deploy now" not in logf.read_text(encoding="utf-8")
+
+
+def test_label_rejects_wrong_original(tmp_path, monkeypatch):
+    fixtures = tmp_path / "classifier_cases.json"
+    fixtures.write_text("[]\n", encoding="utf-8")
+    logf = tmp_path / "gate.log"
+    sha = hashlib.sha256("the real message".encode("utf-8")).hexdigest()
+    logf.write_text("2026-06-09T18:00:00+00:00 sha256=%s\n" % sha, encoding="utf-8")
+    rc = _run_label(monkeypatch, "a DIFFERENT message", [
+        "label", "--log", str(logf), "--sha256", sha,
+        "--expected", "chatter", "--note", "should reject", "--fixtures", str(fixtures)])
+    assert rc == 3                                          # sha256 mismatch
+    assert _json.loads(fixtures.read_text(encoding="utf-8")) == []   # nothing appended
+
+
+def test_label_rejects_sha_absent_from_log(tmp_path, monkeypatch):
+    # The supplied text hashes to --sha256 (so exit 3 does NOT fire), but no
+    # gate.log line carries that sha256 -> the message was never gated, so the
+    # tool must refuse (exit 4) rather than label a phantom decision.
+    fixtures = tmp_path / "classifier_cases.json"
+    fixtures.write_text("[]\n", encoding="utf-8")
+    logf = tmp_path / "gate.log"
+    other = hashlib.sha256("some other gated line".encode("utf-8")).hexdigest()
+    logf.write_text("2026-06-09T18:00:00+00:00 sha256=%s\n" % other, encoding="utf-8")
+    original = "a message that was never gated"
+    sha = hashlib.sha256(original.encode("utf-8")).hexdigest()
+    rc = _run_label(monkeypatch, original, [
+        "label", "--log", str(logf), "--sha256", sha,
+        "--expected", "claim", "--note", "should reject: not in log",
+        "--fixtures", str(fixtures)])
+    assert rc == 4                                          # sha not present in log
+    assert _json.loads(fixtures.read_text(encoding="utf-8")) == []   # nothing appended
+
+
+def test_label_bad_expected_value_exits_2(tmp_path, monkeypatch):
+    # argparse choices reject anything but claim|chatter -> SystemExit(2).
+    fixtures = tmp_path / "classifier_cases.json"
+    fixtures.write_text("[]\n", encoding="utf-8")
+    logf = tmp_path / "gate.log"
+    logf.write_text("2026-06-09T18:00:00+00:00 sha256=deadbeef\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        _run_label(monkeypatch, "x", [
+            "label", "--log", str(logf), "--sha256", "deadbeef",
+            "--expected", "maybe", "--note", "n", "--fixtures", str(fixtures)])
+    assert exc.value.code == 2
