@@ -77,6 +77,7 @@ class Message:
     read_by: List[str] = field(default_factory=list)
     ref_paths: List[str] = field(default_factory=list)
     scope: str = "local"       # "local" | "escalate" | "broadcast"
+    origin_message_id: Optional[str] = None   # set on push-delivered copies
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -85,6 +86,8 @@ class Message:
         # from_dict restores the default, so round-trips are lossless.
         if d.get("scope") == "local":
             d.pop("scope", None)
+        if d.get("origin_message_id") is None:
+            d.pop("origin_message_id", None)
         return d
 
     @classmethod
@@ -101,4 +104,5 @@ class Message:
             read_by=list(d.get("read_by", [])),
             ref_paths=list(d.get("ref_paths", [])),
             scope=d.get("scope", "local"),
+            origin_message_id=d.get("origin_message_id"),
         )

@@ -37,12 +37,13 @@ def _lane_name(arg: str) -> str:
 
 # Topology verbs run without a session id (operator commands, not session
 # ops). fleet (Phase 2) resolves a session's board only when one is present.
-_SESSION_OPTIONAL_CMDS = {"create-board", "set-parent", "tree", "fleet"}
+_SESSION_OPTIONAL_CMDS = {"create-board", "set-parent", "set-delivery",
+                          "tree", "fleet"}
 
 # New-verb error contract: an {"error": ...} data dict exits 1 with the error
 # on stderr. Existing v1 verbs keep their print-the-dict behavior unchanged.
-_FEDERATION_CMDS = {"create-board", "set-parent", "tree", "fleet",
-                    "escalate", "broadcast"}
+_FEDERATION_CMDS = {"create-board", "set-parent", "set-delivery", "tree",
+                    "fleet", "escalate", "broadcast"}
 
 
 def _add_fed_flags(sp):
@@ -213,6 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("parent", nargs="?", default=None)
     sp.add_argument("--detach", action="store_true")
 
+    sp = sub.add_parser("set-delivery")
+    sp.add_argument("board")
+    sp.add_argument("mode", choices=["pull", "push"])
+
     sp = sub.add_parser("tree")
     sp.add_argument("board", nargs="?", default=None)
 
@@ -330,6 +335,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         op = "set_parent"
         op_args = {"board": args.board, "parent": args.parent,
                    "detach": args.detach}
+    elif cmd == "set-delivery":
+        op = "set_delivery"
+        op_args = {"board": args.board, "mode": args.mode}
     elif cmd == "tree":
         op = "tree"
         op_args = {"board": args.board}

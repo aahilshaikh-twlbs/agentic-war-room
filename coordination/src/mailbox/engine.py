@@ -242,6 +242,20 @@ class MailboxEngine:
             "set-parent id=%s parent=%s was=%s" % (board_id, parent_id, was))
         return {"id": board_id, "parent": parent_id, "was": was}
 
+    def set_delivery(self, board, mode):
+        """Per-board broadcast delivery mode (D1: default pull = read-time;
+        push = materialized copies fan out at send time)."""
+        if mode not in ("pull", "push"):
+            return {"error": "bad-delivery: " + str(mode)}
+        board_id = self._resolve_board_ref(board)
+        if board_id is None:
+            return {"error": "no-such-board: " + str(board)}
+        self.boards[board_id]["delivery"] = mode
+        self._persist_board_meta(board_id)
+        self._audit_federation(
+            "set-delivery id=%s mode=%s" % (board_id, mode))
+        return {"id": board_id, "delivery": mode}
+
     # ----- tree -----
     def tree(self, board=None):
         """Topology render data: {"roots": [node...]}; node = {"id", "name",
@@ -600,7 +614,50 @@ class MailboxEngine:
             self._audit_federation(
                 "send scope=%s board=%s from=%s body_sha=%s"
                 % (scope, board, presence.label, body_sha))
-        return {"id": msg.id}
+        out = {"id": msg.id}
+        if scope == "broadcast":
+            delivered = self._push_broadcast(msg)
+            if delivered:
+                out["delivered"] = delivered
+        return out
+
+    def _push_broadcast(self, msg):
+        """Fan a broadcast out as materialized local copies to every
+        descendant board in push mode. Dedup on origin_message_id (D3: no
+        retroactive re-delivery on topology edits — fan-out happens only at
+        send time; this guard protects replays). The tree is acyclic, so
+        loops are impossible. Returns the boards delivered to."""
+        delivered = []
+        for dest in boards_mod.descendants(self.boards, msg.board):
+            if (self.boards.get(dest) or {}).get("delivery") != "push":
+                continue
+            already = any(
+                m.board == dest and m.origin_message_id == msg.id
+                for m in self.messages.values())
+            if already:
+                continue
+            copy = Message(
+                id=self._gen_id("msg_"),
+                board=dest,
+                from_session=msg.from_session,
+                from_label=msg.from_label,     # origin preserved: no spoofing
+                to=msg.to,
+                kind=msg.kind,
+                body=msg.body,
+                created=msg.created,           # original timestamp for ordering
+                read_by=[],
+                ref_paths=list(msg.ref_paths),
+                scope="local",
+                origin_message_id=msg.id,
+            )
+            self.messages[copy.id] = copy
+            self._persist_message(copy)
+            delivered.append(dest)
+        if delivered:
+            self._audit_federation(
+                "push-delivered origin=%s boards=%s"
+                % (msg.id, ",".join(delivered)))
+        return delivered
 
     # ----- federated reads (multi-board federation) -----
     def federated_messages(self, board_id):
@@ -724,6 +781,10 @@ class MailboxEngine:
         if federated:
             for b in boards:
                 fed_up.update(boards_mod.descendants(self.boards, b))
+                if (self.boards.get(b) or {}).get("delivery") == "push":
+                    # push boards receive materialized copies at send time;
+                    # skipping the read-time broadcast path prevents doubles.
+                    continue
                 fed_down.update(boards_mod.ancestors(self.boards, b))
         label = presence.label
         matched = []

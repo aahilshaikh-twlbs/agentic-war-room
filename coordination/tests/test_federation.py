@@ -744,3 +744,88 @@ def test_cli_claims_federated_default_and_local(tmp_home, tmp_path,
     assert "api work" in capsys.readouterr().out
     assert cli.main(["--session", "s-org", "claims", "--local"]) == 0
     assert "api work" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# T12 — Phase 3: opt-in push delivery (delivery=push meta + origin_message_id)
+# ---------------------------------------------------------------------------
+
+
+def test_message_origin_message_id_sparse_serialization():
+    m = Message(id="msg_0123456789ab", board="b", from_session="s1",
+                from_label="l", to="*", kind="note", body="x", created=1.0)
+    assert "origin_message_id" not in m.to_dict()
+    m2 = Message(id="msg_0123456789ac", board="b", from_session="s1",
+                 from_label="l", to="*", kind="note", body="x", created=1.0,
+                 origin_message_id="msg_0123456789ab")
+    d = m2.to_dict()
+    assert d["origin_message_id"] == "msg_0123456789ab"
+    assert Message.from_dict(d) == m2
+
+
+def test_set_delivery_validates_and_persists(engine, clock):
+    engine.create_board("squad-api")
+    assert engine.set_delivery("squad-api", "push") == {
+        "id": "named-squad-api", "delivery": "push"}
+    assert engine.set_delivery("squad-api", "sideways") == {
+        "error": "bad-delivery: sideways"}
+    assert engine.set_delivery("ghost", "push") == {
+        "error": "no-such-board: ghost"}
+    reloaded = MailboxEngine(engine.state_dir, now_fn=lambda: clock.t)
+    assert reloaded.boards["named-squad-api"]["delivery"] == "push"
+
+
+def test_broadcast_pushes_copies_to_push_descendants_only(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.set_delivery("squad-api", "push")    # squad-web stays pull
+    res = engine.send(session_id="s_org", to="*", kind="note",
+                      body="org announcement", scope="broadcast")
+    assert res["delivered"] == ["named-squad-api"]
+    copies = [m for m in engine.messages.values()
+              if m.origin_message_id == res["id"]]
+    assert len(copies) == 1
+    copy = copies[0]
+    assert copy.board == "named-squad-api"
+    assert copy.scope == "local"
+    assert copy.from_label == "org-sh"          # original sender preserved
+    assert copy.created == engine.messages[res["id"]].created
+
+
+def test_push_fan_out_is_idempotent_per_origin(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.set_delivery("squad-api", "push")
+    res = engine.send(session_id="s_org", to="*", kind="note",
+                      body="once", scope="broadcast")
+    origin = engine.messages[res["id"]]
+    # a second fan-out of the SAME origin (e.g. replay after a topology edit)
+    # delivers nothing new (D3: dedup on origin_message_id)
+    assert engine._push_broadcast(origin) == []
+    copies = [m for m in engine.messages.values()
+              if m.origin_message_id == res["id"]]
+    assert len(copies) == 1
+
+
+def test_poll_inbox_push_board_receives_exactly_once(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    engine.poll_inbox("s_api")                  # drain
+    engine.set_delivery("squad-api", "push")
+    sent = engine.send(session_id="s_org", to="*", kind="note",
+                       body="pushed announcement", scope="broadcast")
+    inbox = engine.poll_inbox("s_api")
+    hits = [m for m in inbox if m["body"] == "pushed announcement"]
+    # the materialized copy arrives as LOCAL; the read-time broadcast path is
+    # suppressed for push boards — never a double delivery
+    assert len(hits) == 1
+    assert hits[0]["direction"] == "local"
+    assert hits[0]["origin_board"] == "named-squad-api"
+    assert hits[0]["origin_message_id"] == sent["id"]
+
+
+def test_cli_set_delivery_verb(tmp_home, monkeypatch, capsys):
+    monkeypatch.delenv("MAILBOX_SESSION_ID", raising=False)
+    client.ensure_running()
+    assert cli.main(["create-board", "squad-api"]) == 0
+    capsys.readouterr()
+    assert cli.main(["set-delivery", "squad-api", "push"]) == 0
+    assert cli.main(["set-delivery", "ghost", "push"]) == 1
+    assert "no-such-board: ghost" in capsys.readouterr().err
