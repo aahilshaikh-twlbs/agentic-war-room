@@ -126,8 +126,19 @@ def _print_tree(data: dict) -> None:
         name = node.get("name")
         if name:
             line += "  (%s)" % name
+        tags = []
+        members = node.get("members")
+        if members is not None:
+            tags.append("%d member%s" % (members, "" if members == 1 else "s"))
+        claims = node.get("claims")
+        if claims:
+            tags.append("%d claim%s" % (claims, "" if claims == 1 else "s"))
+        if node.get("delivery") == "push":
+            tags.append("push")
         if node.get("orphan"):
-            line += "  [orphan: parent missing]"
+            tags.append("orphan: parent missing")
+        if tags:
+            line += "  [%s]" % ", ".join(tags)
         print(line)
         for child in node.get("children", []):
             _walk(child, indent + "    ")

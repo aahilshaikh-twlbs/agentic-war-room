@@ -906,3 +906,47 @@ def test_fleet_rows_carry_via_name(engine, tmp_path):
     fl = engine.fleet(board="org")
     api = [r for r in fl["rows"] if r["label"] == "api-sh"][0]
     assert api["via_name"] == "squad-api"
+
+
+# ---------------------------------------------------------------------------
+# T15 — Phase 4: tree CLI render shows members/claims/delivery tags
+# ---------------------------------------------------------------------------
+
+
+def test_cli_tree_render_shows_members_and_delivery(tmp_home, tmp_path,
+                                                    monkeypatch, capsys):
+    client.ensure_running()
+    assert cli.main(["create-board", "org"]) == 0
+    assert cli.main(["create-board", "squad-api", "--parent", "org"]) == 0
+    assert cli.main(["set-delivery", "squad-api", "push"]) == 0
+    a = tmp_path / "a"
+    a.mkdir()
+    monkeypatch.chdir(a)
+    assert cli.main(["--session", "s-squad", "join", "--board", "squad-api",
+                     "--label", "squad-sh"]) == 0
+    monkeypatch.delenv("MAILBOX_SESSION_ID", raising=False)
+    capsys.readouterr()
+    assert cli.main(["tree"]) == 0
+    out = capsys.readouterr().out
+    # the squad node shows its live member count and its push delivery tag
+    assert "named-squad-api  (squad-api)" in out
+    assert "1 member" in out
+    assert "push" in out
+
+
+def test_cli_fleet_render_shows_via_name(tmp_home, tmp_path, monkeypatch,
+                                         capsys):
+    client.ensure_running()
+    assert cli.main(["create-board", "org"]) == 0
+    assert cli.main(["create-board", "squad-api", "--parent", "org"]) == 0
+    a = tmp_path / "a"
+    a.mkdir()
+    monkeypatch.chdir(a)
+    assert cli.main(["--session", "s-squad", "join", "--board", "squad-api",
+                     "--label", "squad-sh"]) == 0
+    monkeypatch.delenv("MAILBOX_SESSION_ID", raising=False)
+    capsys.readouterr()
+    assert cli.main(["fleet", "org"]) == 0
+    out = capsys.readouterr().out
+    assert "squad-sh" in out
+    assert "(squad-api)" in out                     # via_name annotation
