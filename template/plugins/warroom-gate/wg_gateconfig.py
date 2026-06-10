@@ -19,6 +19,7 @@ _DEFAULTS = {
     "verifier_label": "",
     "verifier_timeout_s": 30,
     "escalate_at": "",
+    "label": "",
 }
 
 # Clamp the bounded wait so a misconfig can't hang the gateway turn (spec
@@ -71,8 +72,8 @@ def _scan(text):
             continue
         m = re.match(
             r"(enforce|min_confidence|show_confidence_badge|severity_inference|"
-            r"require_verifier_at|verifier_label|verifier_timeout_s|escalate_at"
-            r"):\s*(\S+)", s)
+            r"require_verifier_at|verifier_label|verifier_timeout_s|escalate_at|"
+            r"label):\s*(\S+)", s)
         if m:
             k, v = m.group(1), m.group(2)
             if k == "enforce":
@@ -98,6 +99,8 @@ def _scan(text):
                     pass
             elif k == "escalate_at":
                 out["escalate_at"] = v
+            elif k == "label":
+                out["label"] = v
     # The default floor is min_confidence unless the table restated it.
     if "default" not in sev:
         sev["default"] = out["min_confidence"]

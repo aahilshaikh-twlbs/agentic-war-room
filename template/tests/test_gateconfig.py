@@ -123,3 +123,14 @@ def test_unparseable_severity_value_skipped(tmp_path):
 def test_enforce_defaults_false_when_absent(tmp_path):
     (tmp_path / "config.yaml").write_text("war_room:\n  board: x\n")
     assert G.read(tmp_path)["enforce"] is False
+
+
+def test_reads_label(tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "war_room:\n  enforce: true\n  label: alpha-sh\n")
+    assert G.read(tmp_path)["label"] == "alpha-sh"
+
+
+def test_label_defaults_empty(tmp_path):
+    cfg = G.read(tmp_path)
+    assert cfg["label"] == ""

@@ -7,6 +7,7 @@ and returns an abstention rather than raising. It returns None to leave text
 unchanged (chatter / disabled / nothing to do), or a string to replace it.
 """
 import os
+import uuid
 from pathlib import Path
 
 import wg_audit
@@ -15,6 +16,20 @@ import wg_envelope
 import wg_gateconfig
 import wg_policy
 import wg_render
+import wg_verify
+
+
+# Severity rank for at/above comparisons. Higher number = more severe. Unknown
+# tokens rank as default (lowest); `require_verifier_at` "" disables the path,
+# and an unknown floor token ranks 99 so nothing is ever at/above it (safe).
+_SEV_RANK = {"default": 0, "alert3": 1, "alert2": 2, "alert1": 3}
+
+
+def _at_or_above(sev, floor_sev):
+    # type: (str, str) -> bool
+    if not floor_sev:
+        return False
+    return _SEV_RANK.get(sev, 0) >= _SEV_RANK.get(floor_sev, 99)
 
 
 def _profile_root():
@@ -63,10 +78,39 @@ def gate(response_text="", session_id="", model="", platform="", **_):
                          verdict="claim", extra={"sev": sev, "verify": "none"})
             return wg_render.abstention(decision, conf_pct, floor_pct)
 
-        # PASS so far. The verifier handshake (Task 6) composes here; in Phase 1
-        # there is no verifier, so `verify` is "none".
+        # PASS so far. If this severity requires an independent verifier, obtain
+        # a signed verdict before posting; any non-signed outcome abstains
+        # (fail-closed). This whole call sits inside the top-level try/except.
+        verify_state = "none"
+        if _at_or_above(sev, cfg["require_verifier_at"]):
+            res = wg_verify.request_and_wait(
+                label=cfg["label"],
+                verifier_label=cfg["verifier_label"],
+                severity=sev,
+                conf=env.conf,
+                grounded=env.grounded,
+                claim=body if env is not None else response_text,
+                timeout_s=cfg["verifier_timeout_s"],
+                request_id=uuid.uuid4().hex)
+            outcome = res.get("outcome")
+            if outcome == "signed":
+                verify_state = "signed"
+            else:
+                verify_state = outcome or "unreachable"
+                reason = {
+                    "rejected": "verifier-rejected",
+                    "timeout": "verifier-timeout",
+                    "unreachable": "verifier-unreachable",
+                }.get(verify_state, "verifier-unreachable")
+                abstain = wg_policy.Decision(
+                    wg_policy.ABSTAIN, reason, res.get("gap", ""))
+                wg_audit.log(root, abstain, conf, "claim", response_text,
+                             verdict="claim",
+                             extra={"sev": sev, "verify": verify_state})
+                return wg_render.abstention(abstain, conf_pct, floor_pct)
+
         wg_audit.log(root, decision, conf, "claim", response_text,
-                     verdict="claim", extra={"sev": sev, "verify": "none"})
+                     verdict="claim", extra={"sev": sev, "verify": verify_state})
         out = wg_render.with_badge(body, env.conf, cfg["show_badge"]) if env is not None else body
         return out if out != response_text else None
     except Exception:

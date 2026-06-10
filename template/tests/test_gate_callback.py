@@ -143,3 +143,117 @@ def test_chatter_log_does_not_change_return_value(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(_profile(tmp_path)))
     # A bare ack is unchanged after stray-envelope strip -> still returns None.
     assert wg_gate.gate(response_text="ok") is None
+
+
+def _verifier_profile(tmp_path, enforce=True):
+    (tmp_path / "config.yaml").write_text(
+        "war_room:\n"
+        "  enabled: true\n"
+        "  enforce: %s\n"
+        "  label: alpha-sh\n"
+        "  min_confidence: 75\n"
+        "  show_confidence_badge: true\n"
+        "  severity_thresholds:\n"
+        "    alert1: 95\n"
+        "    default: 75\n"
+        "  require_verifier_at: alert1\n"
+        "  verifier_label: verify-sh\n"
+        "  verifier_timeout_s: 30\n" % str(enforce).lower()
+    )
+    return tmp_path
+
+
+_ALERT1 = ("prod db is corrupted\n"
+           "⟦conf=0.97 grounded=tool,file missing=none sev=alert1⟧")
+
+
+def test_alert1_signed_verdict_posts_double_signed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(_verifier_profile(tmp_path)))
+    monkeypatch.setattr(wg_gate.wg_verify, "request_and_wait",
+                        lambda **k: {"outcome": "signed", "gap": "", "by": "verify-sh"})
+    out = wg_gate.gate(response_text=_ALERT1)
+    assert out is not None and "⟦" not in out and "97%" in out
+    line = _gate_log(tmp_path)
+    assert "sev=alert1" in line and "verify=signed" in line
+
+
+def test_alert1_rejected_verdict_abstains_with_gap(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(_verifier_profile(tmp_path)))
+    monkeypatch.setattr(
+        wg_gate.wg_verify, "request_and_wait",
+        lambda **k: {"outcome": "rejected", "gap": "could not reproduce", "by": "verify-sh"})
+    out = wg_gate.gate(response_text=_ALERT1)
+    assert out is not None and "Holding back" in out and "could not reproduce" in out
+    assert "verify=rejected" in _gate_log(tmp_path)
+
+
+def test_alert1_timeout_abstains(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(_verifier_profile(tmp_path)))
+    monkeypatch.setattr(wg_gate.wg_verify, "request_and_wait",
+                        lambda **k: {"outcome": "timeout", "gap": "", "by": "verify-sh"})
+    out = wg_gate.gate(response_text=_ALERT1)
+    assert out is not None and "Holding back" in out
+    assert "verify=timeout" in _gate_log(tmp_path)
+
+
+def test_alert1_unreachable_abstains(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(_verifier_profile(tmp_path)))
+    monkeypatch.setattr(wg_gate.wg_verify, "request_and_wait",
+                        lambda **k: {"outcome": "unreachable", "gap": "", "by": "verify-sh"})
+    out = wg_gate.gate(response_text=_ALERT1)
+    assert out is not None and "Holding back" in out
+    assert "verify=unreachable" in _gate_log(tmp_path)
+
+
+def test_below_severity_floor_never_calls_verifier(tmp_path, monkeypatch):
+    # The verifier handshake only runs AFTER a PASS; a claim that abstains on the
+    # floor must not pay the verifier latency.
+    monkeypatch.setenv("HERMES_HOME", str(_verifier_profile(tmp_path)))
+    monkeypatch.setattr(wg_gate.wg_verify, "request_and_wait",
+                        lambda **k: (_ for _ in ()).throw(AssertionError("verifier called")))
+    out = wg_gate.gate(
+        response_text="prod db is corrupted\n"
+                      "⟦conf=0.90 grounded=tool,file missing=none sev=alert1⟧")
+    assert out is not None and "Holding back" in out
+
+
+def test_below_require_verifier_at_passes_without_verifier(tmp_path, monkeypatch):
+    # alert2 is below require_verifier_at=alert1, so no handshake; clears its
+    # floor (alert2 not in table -> default 75) and posts.
+    monkeypatch.setenv("HERMES_HOME", str(_verifier_profile(tmp_path)))
+    monkeypatch.setattr(wg_gate.wg_verify, "request_and_wait",
+                        lambda **k: (_ for _ in ()).throw(AssertionError("verifier called")))
+    out = wg_gate.gate(
+        response_text="staging is slow\n"
+                      "⟦conf=0.80 grounded=tool missing=none sev=alert2⟧")
+    assert out is not None and "⟦" not in out and "80%" in out
+    assert "verify=none" in _gate_log(tmp_path)
+
+
+def test_verifier_exception_fails_closed(tmp_path, monkeypatch):
+    # If wg_verify itself throws, the top-level try/except still abstains; the
+    # callback never raises (extends the fail-closed contract to the verifier).
+    monkeypatch.setenv("HERMES_HOME", str(_verifier_profile(tmp_path)))
+    monkeypatch.setattr(wg_gate.wg_verify, "request_and_wait",
+                        lambda **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    out = wg_gate.gate(response_text=_ALERT1)
+    assert isinstance(out, str) and "Holding back" in out
+
+
+def test_blank_verifier_label_at_gated_severity_abstains(tmp_path, monkeypatch):
+    # require_verifier_at=alert1 but verifier_label blank => misconfig => abstain.
+    # wg_verify.request_and_wait returns unreachable for a blank label (T5), so
+    # the real (un-mocked) call is fine here and must not hit a subprocess.
+    (tmp_path / "config.yaml").write_text(
+        "war_room:\n"
+        "  enabled: true\n"
+        "  enforce: true\n"
+        "  label: alpha-sh\n"
+        "  min_confidence: 75\n"
+        "  severity_thresholds:\n"
+        "    alert1: 95\n"
+        "  require_verifier_at: alert1\n"
+        "  verifier_label: \n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    out = wg_gate.gate(response_text=_ALERT1)
+    assert out is not None and "Holding back" in out
