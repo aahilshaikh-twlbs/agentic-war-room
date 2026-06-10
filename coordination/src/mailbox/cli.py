@@ -37,11 +37,11 @@ def _lane_name(arg: str) -> str:
 
 # Topology verbs run without a session id (operator commands, not session
 # ops). fleet (Phase 2) resolves a session's board only when one is present.
-_SESSION_OPTIONAL_CMDS = {"create-board", "set-parent", "tree"}
+_SESSION_OPTIONAL_CMDS = {"create-board", "set-parent", "tree", "fleet"}
 
 # New-verb error contract: an {"error": ...} data dict exits 1 with the error
 # on stderr. Existing v1 verbs keep their print-the-dict behavior unchanged.
-_FEDERATION_CMDS = {"create-board", "set-parent", "tree",
+_FEDERATION_CMDS = {"create-board", "set-parent", "tree", "fleet",
                     "escalate", "broadcast"}
 
 
@@ -135,6 +135,24 @@ def _print_tree(data: dict) -> None:
         _walk(root, "")
 
 
+def _print_fleet(data: dict) -> None:
+    rows = data.get("rows", []) if isinstance(data, dict) else []
+    if not rows:
+        print("(nobody in subtree)")
+        return
+    for r in rows:
+        via = r.get("via_board", "?")
+        via_name = r.get("via_name")
+        if via_name:
+            via += "  (%s)" % via_name
+        print("%-20s  %-7s  %ss ago  %s" % (
+            r.get("label", "?"),
+            r.get("status", "?"),
+            int(r.get("last_seen_seconds", 0)),
+            via,
+        ))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mailbox")
     p.add_argument("--session", default=None)
@@ -198,14 +216,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("tree")
     sp.add_argument("board", nargs="?", default=None)
 
+    sp = sub.add_parser("fleet")
+    sp.add_argument("board", nargs="?", default=None)
+
     sp = sub.add_parser("inbox")
     _add_fed_flags(sp)
 
     sp = sub.add_parser("claims")
     sp.add_argument("--mine", action="store_true")
     sp.add_argument("--all", action="store_true")
+    _add_fed_flags(sp)
 
-    sub.add_parser("ps")
+    sp = sub.add_parser("ps")
+    _add_fed_flags(sp)
     sub.add_parser("board")
     sub.add_parser("whoami")
     return p
@@ -310,6 +333,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif cmd == "tree":
         op = "tree"
         op_args = {"board": args.board}
+    elif cmd == "fleet":
+        op = "fleet"
+        op_args = {"session_id": session_id, "board": args.board}
     elif cmd == "inbox":
         op = "poll_inbox"
         op_args = {"session_id": session_id, "federated": args.federated}
@@ -321,10 +347,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             scope = "board"
         op = "list_claims"
-        op_args = {"session_id": session_id, "scope": scope}
+        op_args = {"session_id": session_id, "scope": scope,
+                   "federated": args.federated}
     elif cmd == "ps":
         op = "ps"
-        op_args = {"session_id": session_id}
+        op_args = {"session_id": session_id, "federated": args.federated}
     elif cmd == "board":
         op = "board"
         op_args = {"session_id": session_id}
@@ -350,6 +377,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         _print_inbox(data or [])
     elif cmd == "tree":
         _print_tree(data or {})
+    elif cmd == "fleet":
+        _print_fleet(data or {})
     elif cmd == "claims":
         _print_claims(data or [])
     elif cmd == "list-lanes":

@@ -677,3 +677,70 @@ def test_check_write_enforcement_stays_board_scoped(engine, tmp_path):
     # enforcement stays board-scoped: the ancestor's write is NOT denied
     res = engine.check_write("s_org", target)
     assert res["decision"] == "allow"
+
+
+# ---------------------------------------------------------------------------
+# T11 — CLI fleet + ps/claims federation flags
+# ---------------------------------------------------------------------------
+
+
+def _cli_tree_with_two_sessions(tmp_path, monkeypatch):
+    """org -> squad-api; one session per board, distinct cwds."""
+    assert cli.main(["create-board", "org"]) == 0
+    assert cli.main(["create-board", "squad-api", "--parent", "org"]) == 0
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
+    monkeypatch.chdir(a)
+    assert cli.main(["--session", "s-squad", "join", "--board", "squad-api",
+                     "--label", "squad-sh"]) == 0
+    monkeypatch.chdir(b)
+    assert cli.main(["--session", "s-org", "join", "--board", "org",
+                     "--label", "org-sh"]) == 0
+
+
+def test_cli_fleet_renders_subtree_presence(tmp_home, tmp_path, monkeypatch,
+                                            capsys):
+    client.ensure_running()
+    _cli_tree_with_two_sessions(tmp_path, monkeypatch)
+    capsys.readouterr()
+    monkeypatch.delenv("MAILBOX_SESSION_ID", raising=False)
+    assert cli.main(["fleet", "org"]) == 0
+    out = capsys.readouterr().out
+    assert "squad-sh" in out
+    assert "org-sh" in out
+    assert "named-squad-api" in out          # via_board annotation
+    # bad ref errors cleanly
+    assert cli.main(["fleet", "ghost"]) == 1
+    assert "no-such-board: ghost" in capsys.readouterr().err
+    # no board + no session: engine's no-board error
+    assert cli.main(["fleet"]) == 1
+    assert "no-board" in capsys.readouterr().err
+
+
+def test_cli_ps_federated_default_and_local(tmp_home, tmp_path, monkeypatch,
+                                            capsys):
+    client.ensure_running()
+    _cli_tree_with_two_sessions(tmp_path, monkeypatch)
+    capsys.readouterr()
+    assert cli.main(["--session", "s-org", "ps"]) == 0
+    fed_out = capsys.readouterr().out
+    assert "squad-sh" in fed_out and "org-sh" in fed_out
+    assert cli.main(["--session", "s-org", "ps", "--local"]) == 0
+    local_out = capsys.readouterr().out
+    assert "squad-sh" not in local_out and "org-sh" in local_out
+
+
+def test_cli_claims_federated_default_and_local(tmp_home, tmp_path,
+                                                monkeypatch, capsys):
+    client.ensure_running()
+    _cli_tree_with_two_sessions(tmp_path, monkeypatch)
+    target = str(tmp_path / "a" / "src" / "core.py")
+    assert cli.main(["--session", "s-squad", "claim", target,
+                     "--note", "api work"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--session", "s-org", "claims"]) == 0
+    assert "api work" in capsys.readouterr().out
+    assert cli.main(["--session", "s-org", "claims", "--local"]) == 0
+    assert "api work" not in capsys.readouterr().out
