@@ -628,6 +628,89 @@ class MailboxEngine:
         out.sort(key=lambda d: d["created"])
         return out
 
+    def federated_presence(self, board_id):
+        """Presence across subtree(board_id) — an ancestor sees the whole
+        fleet beneath it (roll-up only; spec §4). Rows are ps-shaped plus
+        "via_board": the first of the member's boards inside the subtree."""
+        sub = set(boards_mod.subtree(self.boards, board_id))
+        rows = []
+        for p in self.presence.values():
+            hit = [b for b in p.boards if b in sub]
+            if not hit:
+                continue
+            rows.append({
+                "session_id": p.session_id,
+                "label": p.label,
+                "cwd": p.cwd,
+                "member": p.member,
+                "status": self._status_of(p),
+                "last_seen_seconds": self._now() - p.last_heartbeat,
+                "boards": list(p.boards),
+                "via_board": hit[0],
+            })
+        rows.sort(key=lambda r: r["label"])
+        return rows
+
+    def _subtree_sessions(self, sub):
+        """Session ids whose presence sits on ANY board in `sub` (a set of
+        board ids). This is the federation roll-up key for CLAIMS: a claim is
+        stored on its holder's REPO board (boards[0], a cwd-/repo- root that is
+        NEVER inside a named subtree), so claims can only be federated by their
+        HOLDER's presence membership — the same membership that already makes
+        federated_presence work. Rolls UP only (a parent's subtree includes a
+        child's session; never the reverse)."""
+        out = set()
+        for p in self.presence.values():
+            if sub & set(p.boards):
+                out.add(p.session_id)
+        return out
+
+    def federated_claims(self, board_id):
+        """Unreleased claims across subtree(board_id), annotated like
+        list_claims plus "origin_board". Visibility only — conflict
+        enforcement (check_write/claim_lane) stays board-scoped.
+
+        A claim lives on its holder's repo board, so we federate by the
+        HOLDER's presence membership in the subtree, not by claim.board ∈
+        subtree (which would surface nothing — repo boards are roots outside
+        every named subtree). This is the cross-repo dogpile case in spec §4:
+        a file claim made by a squad session is visible to its team/org
+        ancestors."""
+        sub = set(boards_mod.subtree(self.boards, board_id))
+        sessions = self._subtree_sessions(sub)
+        out = []
+        for c in self.claims.values():
+            if c.released:
+                continue
+            if c.session_id not in sessions:
+                continue
+            holder = self.presence.get(c.session_id)
+            if holder is None or holder.status == "offline":
+                holder_status = "offline"
+            elif self._is_live(holder):
+                holder_status = "active"
+            else:
+                holder_status = "stale"
+            entry = c.to_dict()
+            entry["live"] = holder_status == "active"
+            entry["holder_status"] = holder_status
+            entry["origin_board"] = c.board
+            out.append(entry)
+        return out
+
+    def fleet(self, session_id=None, board=None):
+        """Operator fleet view: federated presence for `board` (id or name),
+        defaulting to the calling session's primary board."""
+        if board is not None:
+            bid = self._resolve_board_ref(board)
+            if bid is None:
+                return {"error": "no-such-board: " + str(board)}
+        elif session_id is not None and session_id in self.presence:
+            bid = self._primary_board(session_id)
+        else:
+            return {"error": "no-board: pass a board or run inside a session"}
+        return {"board": bid, "rows": self.federated_presence(bid)}
+
     # ----- poll_inbox -----
     def poll_inbox(self, session_id, federated=True):
         presence = self.presence.get(session_id)
@@ -695,12 +778,22 @@ class MailboxEngine:
         return {"sent_to": holder.label}
 
     # ----- list_claims -----
-    def list_claims(self, session_id, scope="board"):
+    def list_claims(self, session_id, scope="board", federated=True):
         p = self.presence.get(session_id)
         if p is not None:
             boards = set(p.boards)
         else:
             boards = set()
+        # D2/DV8: federated "board" scope widens to the subtree union, then
+        # matches claims by their HOLDER's presence membership in that subtree
+        # (claims live on repo boards, outside every named subtree — see
+        # _subtree_sessions). Visibility only; enforcement stays board-scoped.
+        fed_sessions = None
+        if federated and scope == "board":
+            widened = set()
+            for b in boards:
+                widened.update(boards_mod.subtree(self.boards, b))
+            fed_sessions = self._subtree_sessions(widened)
         out = []
         for c in self.claims.values():
             if c.released:
@@ -710,7 +803,10 @@ class MailboxEngine:
                     continue
             elif scope == "all":
                 pass
-            else:  # "board"
+            elif fed_sessions is not None:  # federated "board"
+                if c.session_id not in fed_sessions:
+                    continue
+            else:  # local "board" — exact v1 behavior
                 if c.board not in boards:
                     continue
             holder = self.presence.get(c.session_id)
@@ -737,14 +833,19 @@ class MailboxEngine:
         return "stale"
 
     # ----- ps -----
-    def ps(self, session_id):
+    def ps(self, session_id, federated=True):
         me = self.presence.get(session_id)
         if me is None:
             return []
-        my_boards = set(me.boards)
+        if federated:
+            scope = set()
+            for b in me.boards:
+                scope.update(boards_mod.subtree(self.boards, b))
+        else:
+            scope = set(me.boards)
         rows = []
         for p in self.presence.values():
-            if not (my_boards & set(p.boards)):
+            if not (scope & set(p.boards)):
                 continue
             rows.append({
                 "session_id": p.session_id,

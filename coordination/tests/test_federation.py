@@ -569,3 +569,111 @@ def test_cli_send_scope_flag_equivalent(tmp_home, tmp_path, monkeypatch,
     capsys.readouterr()
     assert cli.main(["--session", "s-org", "inbox"]) == 0
     assert "via send flag" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# T10 — presence/claims federation: fleet, ps/claims roll-up (visibility only)
+# ---------------------------------------------------------------------------
+
+
+def test_federated_presence_rolls_up_subtree(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    rows = engine.federated_presence("named-org")
+    labels = [r["label"] for r in rows]
+    assert labels == ["api-sh", "org-sh", "team-sh", "web-sh"]
+    api_row = [r for r in rows if r["label"] == "api-sh"][0]
+    assert api_row["via_board"] == "named-squad-api"
+
+
+def test_federated_presence_leaf_sees_only_itself(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    rows = engine.federated_presence("named-squad-api")
+    assert [r["label"] for r in rows] == ["api-sh"]   # roll-up only, never up
+
+
+def test_fleet_resolves_refs_session_default_and_errors(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    by_name = engine.fleet(board="org")
+    assert by_name["board"] == "named-org"
+    assert len(by_name["rows"]) == 4
+    # no board: fall back to the session's primary (named) board
+    by_session = engine.fleet(session_id="s_team")
+    assert by_session["board"] == "named-team-platform"
+    assert [r["label"] for r in by_session["rows"]] == [
+        "api-sh", "team-sh", "web-sh"]
+    assert engine.fleet(board="ghost") == {"error": "no-such-board: ghost"}
+    assert engine.fleet() == {
+        "error": "no-board: pass a board or run inside a session"}
+
+
+def test_ps_federated_default_and_local_flag(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    fed = [r["label"] for r in engine.ps("s_org")]
+    assert fed == ["api-sh", "org-sh", "team-sh", "web-sh"]
+    local = [r["label"] for r in engine.ps("s_org", federated=False)]
+    assert local == ["org-sh"]
+    # child never sees the parent's presence (roll-up only)
+    child = [r["label"] for r in engine.ps("s_api")]
+    assert child == ["api-sh"]
+
+
+def test_list_claims_board_scope_widens_to_subtree(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    target = str(tmp_path / "cwd2" / "src" / "core.py")
+    engine.claim(session_id="s_api", globs=[target], note="api work")
+    fed = engine.list_claims("s_org")
+    assert any(c["note"] == "api work" for c in fed)
+    local = engine.list_claims("s_org", federated=False)
+    assert all(c["note"] != "api work" for c in local)
+    # child never sees the parent's claims
+    parent_target = str(tmp_path / "cwd0" / "doc.md")
+    engine.claim(session_id="s_org", globs=[parent_target], note="org work")
+    child = engine.list_claims("s_api")
+    assert all(c["note"] != "org work" for c in child)
+
+
+def test_federated_claims_annotates_origin(engine, tmp_path):
+    _setup_tree(engine, tmp_path)
+    target = str(tmp_path / "cwd2" / "src" / "core.py")
+    engine.claim(session_id="s_api", globs=[target], note="api work")
+    rows = engine.federated_claims("named-org")
+    hit = [c for c in rows if c["note"] == "api work"]
+    assert len(hit) == 1
+    assert hit[0]["origin_board"] == hit[0]["board"]
+    assert hit[0]["holder_status"] == "active"
+
+
+def test_federated_claims_cross_repo_holder_visible_to_ancestor(engine,
+                                                                tmp_path):
+    # Spec §4 dogpile-across-a-federated-team: the holder's claim lives on its
+    # OWN repo board (a cwd- root, outside every named subtree). It is still
+    # surfaced to an ancestor because federation rolls up by the HOLDER's
+    # presence membership, not by claim.board ∈ named-subtree. Without the
+    # presence-membership roll-up this returns nothing.
+    _setup_tree(engine, tmp_path)
+    target = str(tmp_path / "cwd2" / "src" / "core.py")
+    res = engine.claim(session_id="s_api", globs=[target], note="api work")
+    assert res["board"].startswith(("cwd-", "repo-"))   # NOT a named board
+    assert res["board"] not in boards_mod.subtree(engine.boards, "named-org")
+    rows = engine.federated_claims("named-org")
+    assert any(c["note"] == "api work" for c in rows)    # visible regardless
+
+
+def test_check_write_enforcement_stays_board_scoped(engine, tmp_path):
+    # DV8: visibility federates; ENFORCEMENT does not. The holder is the CHILD
+    # (s_api) so the parent's (s_org) FEDERATED view DOES surface the claim —
+    # proving visibility federates — while check_write for the parent still
+    # allows, proving enforcement stays board-scoped (the claim sits on the
+    # child's repo board, never in the parent's board set). This exercises the
+    # real cross-board boundary; in v1 (no federation) the parent could not
+    # even see the claim, so an accidental federation of enforcement would be
+    # caught here.
+    _setup_tree(engine, tmp_path)
+    target = str(tmp_path / "cwd2" / "src" / "core.py")
+    engine.claim(session_id="s_api", globs=[target], note="api claim")
+    # visibility federates: the ancestor sees the descendant's claim
+    fed = engine.list_claims("s_org")
+    assert any(c["note"] == "api claim" for c in fed)
+    # enforcement stays board-scoped: the ancestor's write is NOT denied
+    res = engine.check_write("s_org", target)
+    assert res["decision"] == "allow"

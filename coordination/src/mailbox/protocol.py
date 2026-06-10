@@ -16,7 +16,7 @@ OPS = {
     "request_release", "send", "poll_inbox", "list_claims", "ps", "whoami",
     "board", "gc", "ping",
     "claim_lane", "release_lane", "list_lanes",
-    "create_board", "set_parent", "tree",
+    "create_board", "set_parent", "tree", "fleet",
 }
 
 
