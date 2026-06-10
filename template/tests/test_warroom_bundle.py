@@ -21,3 +21,21 @@ def test_skill_has_description_frontmatter():
 def test_config_has_war_room_block():
     cfg = (ROOT / "config.yaml").read_text()
     assert re.search(r"^war_room:", cfg, re.M)
+
+
+def test_bundle_instruction_names_intake_order():
+    bundle = (ROOT / "skill-bundles" / "warroom.yaml").read_text()
+    m = re.search(r"^instruction:\s*\|\n((?:[ \t]+.*\n?)*)", bundle, re.M)
+    assert m, "bundle must carry a block-scalar instruction"
+    instr = m.group(1).lower()
+    order = ["orient", "triage", "severity", "route", "lane", "first post"]
+    idxs = [instr.find(w) for w in order]
+    assert -1 not in idxs, "instruction must name every intake step: %r" % order
+    assert idxs == sorted(idxs), "intake steps must be named in order"
+    assert "confidence-gate" in instr
+
+
+def test_bundle_skill_list_unchanged():
+    bundle = (ROOT / "skill-bundles" / "warroom.yaml").read_text()
+    skills = re.findall(r"^\s*-\s*([a-z-]+)\s*$", bundle, re.M)
+    assert skills == ["warroom", "confidence-gate"]
