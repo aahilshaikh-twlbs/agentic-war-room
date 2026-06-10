@@ -134,3 +134,9 @@ def test_reads_label(tmp_path):
 def test_label_defaults_empty(tmp_path):
     cfg = G.read(tmp_path)
     assert cfg["label"] == ""
+
+
+def test_escalate_at_surfaced(tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "war_room:\n  enforce: true\n  escalate_at: alert2\n")
+    assert G.read(tmp_path)["escalate_at"] == "alert2"

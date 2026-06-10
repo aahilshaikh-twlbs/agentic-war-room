@@ -57,3 +57,11 @@ Tag a claim's severity in the envelope's optional trailing `sev=` field:
 You never run the handshake by hand; the gate does it. Your job is to tag `sev=`
 honestly and ground the claim well enough that an adversarial second agent can
 confirm it.
+
+## Auto-escalation is the orchestrator's job, not the gate's
+
+The confidence gate annotates severity (in the audit and your envelope) but does
+NOT escalate. When your assessed severity is at/above `war_room.escalate_at`, the
+`/warroom` orchestrator performs the `mailbox escalate "<finding>"` post so the
+finding becomes visible up the board tree. The gate stays a pure transform with
+exactly one outbound message — the verifier request — and never double-posts.

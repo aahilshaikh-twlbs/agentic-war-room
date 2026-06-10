@@ -299,3 +299,29 @@ def test_explicit_mode_does_not_raise(tmp_path, monkeypatch):
                       "⟦conf=0.80 grounded=tool,file missing=none⟧")
     assert out is not None and "⟦" not in out and "80%" in out
     assert "sev=default" in _gate_log(tmp_path)
+
+
+def test_gate_does_not_escalate_on_pass(tmp_path, monkeypatch):
+    # escalate_at is set, but the GATE must not initiate an escalate send. The
+    # only sanctioned gate-side send is the verifier request, which requires
+    # require_verifier_at (NOT set here). So wg_verify must never be invoked.
+    (tmp_path / "config.yaml").write_text(
+        "war_room:\n"
+        "  enabled: true\n"
+        "  enforce: true\n"
+        "  label: alpha-sh\n"
+        "  min_confidence: 75\n"
+        "  show_confidence_badge: true\n"
+        "  severity_thresholds:\n"
+        "    alert2: 80\n"
+        "    default: 75\n"
+        "  escalate_at: alert2\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(wg_gate.wg_verify, "request_and_wait",
+                        lambda **k: (_ for _ in ()).throw(AssertionError("gate must not send")))
+    out = wg_gate.gate(
+        response_text="staging cache is cold\n"
+                      "⟦conf=0.85 grounded=tool missing=none sev=alert2⟧")
+    # The claim posts (cleared alert2 floor 80); the gate did NOT escalate.
+    assert out is not None and "⟦" not in out and "85%" in out
+    assert "verify=none" in _gate_log(tmp_path)
