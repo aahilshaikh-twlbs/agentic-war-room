@@ -418,14 +418,20 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
     if "warroom.enroll" in selected:
         mc = schema.clamp_pct(values.get("warroom.min_confidence", ""))
         board = values.get("warroom.board", "").strip()
-        patch_war_room_block(profile_root, board,
+        parent = values.get("warroom.parent", "").strip()
+        patch_war_room_block(profile_root, board, parent=parent,
                              min_confidence=mc, enforce=("warroom.enforce" in selected))
         # Cross-agent runtime: bootstrap writes the mailbox: block (same board,
         # keeping war_room.board / mailbox.board in sync per decision #13),
         # persists runtime state, and installs the Claude Code SessionStart hook.
         label = values.get("warroom.label", "").strip() or ident.handle
         from . import enroll
-        st = enroll.bootstrap(profile_root, board, label)
+        # parent kwarg only when supplied: keeps monkeypatched legacy-signature
+        # bootstrap recorders (existing tests) working unchanged.
+        if parent:
+            st = enroll.bootstrap(profile_root, board, label, parent=parent)
+        else:
+            st = enroll.bootstrap(profile_root, board, label)
         # Teach the persona to use mailbox lane-claims ambiently (idempotent).
         patch_persona_decisions(profile_root, _WARROOM_PERSONA_RULE,
                                 sentinel_id="warroom-runtime")

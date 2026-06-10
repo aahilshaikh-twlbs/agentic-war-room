@@ -7,9 +7,12 @@ installer all read from here so they cannot drift.
 """
 import re
 
-# Ordered key set for the sentinel-managed war_room config block.
+# Ordered key set for the sentinel-managed war_room config block. `parent` is
+# the optional federation link (multi-board federation spec, 2026-06-09):
+# blank/absent => standalone root board. It renders only when non-empty, so
+# non-federated profiles keep the exact pre-federation block bytes.
 WAR_ROOM_KEYS = (
-    "enabled", "board", "label", "role", "min_confidence",
+    "enabled", "board", "parent", "label", "role", "min_confidence",
     "gate_action", "enforce", "show_confidence_badge",
 )
 
@@ -22,6 +25,7 @@ MAILBOX_KEYS = ("board", "label", "mailbox_home", "socket_path")
 DEFAULTS = {
     "enabled": True,
     "board": "default",
+    "parent": "",
     "label": "",
     "role": "contributor",
     "min_confidence": 75,

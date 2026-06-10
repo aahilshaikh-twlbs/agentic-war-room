@@ -77,6 +77,12 @@ TEXT_FIELDS = [
     # which would silently reorder the wizard prompt sequence).
     TextField(id="warroom.label", prompt="War-room label (defaults to handle)",
               required=False, enable_if="warroom.enroll"),
+    # Federation (multi-board): appended AFTER warroom.label — same F10 rule,
+    # never inserted between existing fields (which would silently reorder the
+    # wizard prompt sequence).
+    TextField(id="warroom.parent",
+              prompt="Parent board (for federation; blank for a standalone board)",
+              required=False, enable_if="warroom.enroll"),
 ]
 
 # Secrets that must NEVER be written to the answers JSON (only to .env).

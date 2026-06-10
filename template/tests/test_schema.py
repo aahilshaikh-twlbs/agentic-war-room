@@ -4,7 +4,7 @@ from warroom_setup import schema
 
 def test_war_room_keys_exact():
     assert schema.WAR_ROOM_KEYS == (
-        "enabled", "board", "label", "role", "min_confidence",
+        "enabled", "board", "parent", "label", "role", "min_confidence",
         "gate_action", "enforce", "show_confidence_badge",
     )
 
