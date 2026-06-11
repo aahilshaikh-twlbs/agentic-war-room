@@ -54,6 +54,15 @@ values): `slack.extra.allow_admin_from`, `slack.extra.group_allow_admin_from`,
 `skills/.hub/index-cache/**`, `skills/.hub/quarantine/**`,
 `slack-manifest-current.json`, `slack-manifest-merged.json`.
 
+## Pre-brief pack docs (`shared/prebrief/**`)
+
+The pre-brief pack doc (`shared/prebrief/<pack>.md`) is injected verbatim into
+the always-loaded `SOUL.md` and the Claude head agent file via persona-sync, so
+it is a public, distribution-owned surface. `sanitize_check.py` already scans it
+(`shared/` is not in `EXCLUDE_DIRS` and `.md` is a scanned suffix), and the test
+`test_warroom_bundle.py::test_sanitize_check_scans_shared_prebrief` locks that
+in. No employer/operator name, channel ID, or secret may appear in a pack doc.
+
 ## Skills folders hard-excluded
 
 - **Any org-namespaced skill directory** — e.g. `skills/<your-employer>/**`.
