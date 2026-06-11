@@ -149,3 +149,113 @@ def test_nonoptional_missing_source_still_raises(tmp_path):
     (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         persona_sync.run(tmp_path / "manifest.json", tmp_path, _IDENT, check=False)
+
+
+# --------------------------------------------------------------------------- #
+# Task 8 -- prebrief.py: parse_pack, show, verify
+# --------------------------------------------------------------------------- #
+from warroom_setup import prebrief  # noqa: E402
+
+
+def _profile_with_pack(tmp_path, *, members=("confidence-gate", "warroom"),
+                       pack_version="1.0.0", with_skills=True,
+                       with_bundle=True, with_doc=True, body_version=None):
+    """Build a tmp profile with a pack doc, member skills, and a bundle."""
+    if body_version is None:
+        body_version = pack_version
+    if with_doc:
+        (tmp_path / "shared" / "prebrief").mkdir(parents=True)
+        ml = "\n".join("  - %s" % m for m in members)
+        (tmp_path / "shared" / "prebrief" / "warroom.md").write_text(
+            "---\npack: warroom\npack_version: %s\nsummary: >\n  s\nmembers:\n%s\n---\n"
+            "# War-room pre-brief\n\nPack version: %s\n" % (pack_version, ml, body_version),
+            encoding="utf-8")
+    if with_skills:
+        for m in members:
+            (tmp_path / "skills" / m).mkdir(parents=True)
+            (tmp_path / "skills" / m / "SKILL.md").write_text(
+                "---\nname: %s\ndescription: d\n---\n# %s\n" % (m, m), encoding="utf-8")
+    if with_bundle:
+        (tmp_path / "skill-bundles").mkdir(parents=True)
+        sk = "\n".join("  - %s" % m for m in members)
+        (tmp_path / "skill-bundles" / "warroom.yaml").write_text(
+            "name: warroom\ndescription: d\nskills:\n%s\ninstruction: |\n  x\n" % sk,
+            encoding="utf-8")
+    return tmp_path
+
+
+def test_parse_pack_reads_frontmatter(tmp_path):
+    root = _profile_with_pack(tmp_path)
+    pack = prebrief.parse_pack(root, "warroom")
+    assert pack["pack"] == "warroom"
+    assert pack["pack_version"] == "1.0.0"
+    assert pack["members"] == ["confidence-gate", "warroom"]
+
+
+def test_parse_pack_missing_doc_raises(tmp_path):
+    root = _profile_with_pack(tmp_path, with_doc=False)
+    import pytest
+    with pytest.raises(FileNotFoundError):
+        prebrief.parse_pack(root, "warroom")
+
+
+def test_show_prints_version_members_and_install_status(tmp_path):
+    root = _profile_with_pack(tmp_path)
+    out = io.StringIO()
+    rc = prebrief.show(root, "warroom", out=out)
+    assert rc == 0
+    text = out.getvalue()
+    assert "pack: warroom" in text and "version: 1.0.0" in text
+    assert "confidence-gate" in text and "warroom" in text
+    assert "installed" in text  # member install status column
+
+
+def test_show_reports_pin_gap(tmp_path):
+    root = _profile_with_pack(tmp_path, pack_version="1.2.0")
+    (root / "local" / "prebrief").mkdir(parents=True)
+    (root / "local" / "prebrief" / "warroom.md").write_text(
+        "---\npack: warroom\npack_version: 1.0.0\n---\n# x\nPack version: 1.0.0\n",
+        encoding="utf-8")
+    out = io.StringIO()
+    prebrief.show(root, "warroom", out=out)
+    text = out.getvalue()
+    assert "pinned: 1.0.0" in text and "available: 1.2.0" in text
+
+
+def test_verify_passes_on_healthy_pack(tmp_path):
+    root = _profile_with_pack(tmp_path)
+    out = io.StringIO()
+    assert prebrief.verify(root, "warroom", out=out) == 0
+    assert "OK" in out.getvalue()
+
+
+def test_verify_fails_on_missing_member_skill(tmp_path):
+    root = _profile_with_pack(tmp_path, with_skills=False)
+    out = io.StringIO()
+    assert prebrief.verify(root, "warroom", out=out) == 1
+    assert "does not resolve" in out.getvalue()
+
+
+def test_verify_fails_on_bundle_mismatch(tmp_path):
+    root = _profile_with_pack(tmp_path)
+    # bundle drops a member
+    (root / "skill-bundles" / "warroom.yaml").write_text(
+        "name: warroom\ndescription: d\nskills:\n  - warroom\ninstruction: |\n  x\n",
+        encoding="utf-8")
+    out = io.StringIO()
+    assert prebrief.verify(root, "warroom", out=out) == 1
+    assert "bundle" in out.getvalue()
+
+
+def test_verify_fails_on_version_mirror_drift(tmp_path):
+    root = _profile_with_pack(tmp_path, pack_version="1.0.0", body_version="9.9.9")
+    out = io.StringIO()
+    assert prebrief.verify(root, "warroom", out=out) == 1
+    assert "version" in out.getvalue().lower()
+
+
+def test_verify_missing_doc_returns_1(tmp_path):
+    root = _profile_with_pack(tmp_path, with_doc=False)
+    out = io.StringIO()
+    assert prebrief.verify(root, "warroom", out=out) == 1
+    assert "pack doc" in out.getvalue().lower()
