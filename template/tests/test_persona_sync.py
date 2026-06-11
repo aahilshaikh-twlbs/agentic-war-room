@@ -89,3 +89,57 @@ def test_shipped_manifest_compiles_against_seeded_overlay(tmp_path):
         for p in (soul, head):
             if p.exists():
                 p.unlink()
+
+
+# ---- Pre-brief: shipped manifest injects the pack section into both outputs ----
+
+def test_shipped_prebrief_section_in_both_outputs(tmp_path):
+    import shutil
+    src = Path(__file__).resolve().parents[1]
+    prof = tmp_path / "prof"
+    for d in ("persona", "templates", "shared"):
+        shutil.copytree(src / d, prof / d)
+    shutil.copy2(src / "manifest.json", prof / "manifest.json")
+    (prof / "local").mkdir()
+    shutil.copytree(prof / "persona", prof / "local" / "persona")
+    # Redirect both manifest targets under tmp so the real ~/.hermes /
+    # ~/.claude are never touched.
+    manifest = json.loads((prof / "manifest.json").read_text(encoding="utf-8"))
+    for out in manifest["outputs"]:
+        if out["name"] == "hermes_soul":
+            out["target"] = str(prof / "out" / "soul" / "{{handle}}.md")
+        else:
+            out["target"] = str(prof / "out" / "head" / "{{agent_name}}.md")
+    (prof / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    rc = persona_sync.run(prof / "manifest.json", prof, IDENT, check=False)
+    assert rc == 0
+    soul = (prof / "out" / "soul" / "aria-sh.md").read_text(encoding="utf-8")
+    head = (prof / "out" / "head" / "aria.md").read_text(encoding="utf-8")
+    for text in (soul, head):
+        assert "## War-room pre-brief" in text
+        assert "Ground every factual claim" in text   # gate contract sentence
+        assert "/warroom" in text                       # full-protocol pointer
+        assert "Pack version: 1.0.0" in text            # version observability
+        assert "{{" not in text
+
+
+def test_shipped_prebrief_omitted_when_doc_deleted(tmp_path):
+    import shutil
+    src = Path(__file__).resolve().parents[1]
+    prof = tmp_path / "prof"
+    for d in ("persona", "templates", "shared"):
+        shutil.copytree(src / d, prof / d)
+    shutil.copy2(src / "manifest.json", prof / "manifest.json")
+    (prof / "local").mkdir()
+    shutil.copytree(prof / "persona", prof / "local" / "persona")
+    (prof / "shared" / "prebrief" / "warroom.md").unlink()  # operator removed the pack
+    manifest = json.loads((prof / "manifest.json").read_text(encoding="utf-8"))
+    for out in manifest["outputs"]:
+        out["target"] = str(prof / "out" / out["name"] / "x.md")
+    (prof / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    rc = persona_sync.run(prof / "manifest.json", prof, IDENT, check=False)
+    assert rc == 0  # optional source absent -> omit, no crash
+    for name in ("hermes_soul", "claude_head"):
+        text = (prof / "out" / name / "x.md").read_text(encoding="utf-8")
+        assert "## War-room pre-brief" not in text
