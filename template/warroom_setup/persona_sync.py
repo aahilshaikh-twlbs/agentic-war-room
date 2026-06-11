@@ -70,13 +70,37 @@ def _substitute(text, subs):
     return text
 
 
+def _resolve_section_source(repo_root, sec):
+    # type: (Path, dict) -> Optional[str]
+    """Resolve a section body honoring an optional local_override.
+
+    Precedence: `local_override` (user-owned pin) wins over `source` when the
+    override file exists on disk. Returns the raw text, or None when the
+    section is `optional` and neither path resolves (graceful omission). A
+    non-optional missing source raises FileNotFoundError (unchanged contract).
+    """
+    override = sec.get("local_override")
+    if override and (repo_root / override).is_file():
+        return _read(repo_root, override)
+    source = sec.get("source")
+    if source and (repo_root / source).is_file():
+        return _read(repo_root, source)
+    if sec.get("optional"):
+        return None
+    # non-optional: preserve the original loud failure on a missing source.
+    return _read(repo_root, source)
+
+
 def _render_output(entry, header, repo_root):
     # type: (dict, str, Path) -> str
     parts = [header]
     if entry.get("preamble"):
         parts.append(_read(repo_root, entry["preamble"]).rstrip())
     for sec in entry["sections"]:
-        body = strip_related(strip_frontmatter_and_h1(_read(repo_root, sec["source"])))
+        raw = _resolve_section_source(repo_root, sec)
+        if raw is None:
+            continue  # optional section, source absent -> omit
+        body = strip_related(strip_frontmatter_and_h1(raw))
         parts.append(render_section(sec["title"], body))
     if entry.get("trailer"):
         parts.append(_read(repo_root, entry["trailer"]).rstrip())
