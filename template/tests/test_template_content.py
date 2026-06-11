@@ -156,3 +156,22 @@ def test_readme_preserves_existing_sections():
 def test_readme_has_as_of_date_stamp():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert re.search(r"as of \d{4}-\d{2}-\d{2}", readme)
+
+
+# ---- Pre-brief pack: distribution ownership is explicit (contract fix) ----
+
+def test_distribution_owns_skill_bundles_and_shared():
+    dist = (ROOT / "distribution.yaml").read_text(encoding="utf-8")
+    owned = re.findall(r"^\s*-\s*([A-Za-z0-9_.-]+)\s*$", dist, re.M)
+    for name in ("skill-bundles", "shared"):
+        assert name in owned, "%s must be declared distribution_owned" % name
+    # the originals must survive the edit
+    for name in ("SOUL.md", "config.yaml", "skills", "cron", "distribution.yaml"):
+        assert name in owned, "%s ownership regressed" % name
+
+
+def test_distribution_version_bumped_past_initial():
+    dist = (ROOT / "distribution.yaml").read_text(encoding="utf-8")
+    m = re.search(r"^version:\s*(\S+)\s*$", dist, re.M)
+    assert m, "distribution.yaml must carry a version"
+    assert m.group(1) != "0.1.0", "version must be bumped on a pack change"
