@@ -182,3 +182,86 @@ class TestPatchYamlKeyFallback:
         text = cfg.read_text(encoding="utf-8")
         assert _key_count(text, "mailbox") == 1
         assert text.count(setup._MB_BEGIN) == 1 and text.count(setup._MB_END) == 1
+
+
+def test_renders_nested_severity_thresholds(tmp_path):
+    cfg = _cfg(tmp_path)
+    setup.patch_war_room_block(
+        tmp_path, "board-x",
+        severity_thresholds={"alert1": 95, "alert2": 85, "default": 75},
+        require_verifier_at="alert1", verifier_label="verify-sh",
+        verifier_timeout_s=45, escalate_at="alert2")
+    text = cfg.read_text(encoding="utf-8")
+    assert "  severity_thresholds:" in text
+    assert "    alert1: 95" in text
+    assert "    alert2: 85" in text
+    assert "    default: 75" in text
+    assert "require_verifier_at: alert1" in text
+    assert "verifier_label: verify-sh" in text
+    assert "verifier_timeout_s: 45" in text
+    assert "escalate_at: alert2" in text
+
+
+def test_empty_severity_thresholds_omitted(tmp_path):
+    # Zero-rendered-byte change for non-DEFCON profiles (D2 byte-identical
+    # guarantee): the empty dict, the empty-string DEFCON keys, AND the
+    # default-valued DEFCON scalars (severity_inference, verifier_timeout_s) are
+    # all omitted when no DEFCON surface is configured.
+    cfg = _cfg(tmp_path)
+    setup.patch_war_room_block(tmp_path, "board-x")
+    text = cfg.read_text(encoding="utf-8")
+    assert "severity_thresholds:" not in text
+    assert "require_verifier_at:" not in text
+    assert "verifier_label:" not in text
+    assert "escalate_at:" not in text
+    # default-valued DEFCON scalars are NOT emitted for a plain profile, so the
+    # block matches the pre-DEFCON bytes exactly.
+    assert "verifier_timeout_s:" not in text
+    assert "severity_inference:" not in text
+
+
+def test_default_block_is_byte_identical_to_pre_defcon(tmp_path):
+    # The whole point of D2: a plain non-DEFCON patch produces the exact same
+    # war_room block bytes the pre-DEFCON renderer produced (the shipped
+    # config.yaml block shape). Pin every DEFCON key absent.
+    cfg = _cfg(tmp_path)
+    setup.patch_war_room_block(tmp_path, "board-x")
+    text = cfg.read_text(encoding="utf-8")
+    for k in ("severity_thresholds", "severity_inference", "require_verifier_at",
+              "verifier_label", "verifier_timeout_s", "escalate_at"):
+        assert ("%s" % k) not in text, "%s must not render for a non-DEFCON profile" % k
+
+
+def test_severity_block_survives_reanchor_after_reemit(tmp_path):
+    # Option B: nested mapping is captured by the YAML-key fallback span.
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "top: 1\n"
+        "war_room:\n"
+        "  enabled: true\n"
+        "  severity_thresholds:\n"
+        "    alert1: 95\n"
+        "\n"
+        "bottom: 2\n", encoding="utf-8")
+    setup.patch_war_room_block(
+        tmp_path, "shared",
+        severity_thresholds={"alert1": 90, "default": 75})
+    text = cfg.read_text(encoding="utf-8")
+    assert _key_count(text, "war_room") == 1
+    assert setup._WR_BEGIN in text and setup._WR_END in text
+    assert "    alert1: 90" in text and "alert1: 95" not in text
+    assert "bottom: 2" in text
+
+
+def test_orchestrate_renders_true_by_default(tmp_path):
+    cfg = _cfg(tmp_path)
+    setup.patch_war_room_block(tmp_path, "board-x")
+    assert "orchestrate: true" in cfg.read_text(encoding="utf-8")
+
+
+def test_orchestrate_override_renders_false(tmp_path):
+    cfg = _cfg(tmp_path)
+    setup.patch_war_room_block(tmp_path, "board-x", orchestrate=False)
+    text = cfg.read_text(encoding="utf-8")
+    assert "orchestrate: false" in text
+    assert text.count(setup._WR_BEGIN) == 1

@@ -110,6 +110,43 @@ def test_bin_mailbox_shim_help_exits_zero(tmp_path):
     )
 
 
+import json as _json
+
+
+def test_inbox_json_emits_message_dicts(tmp_home, capsys):
+    client.ensure_running()
+    a, b = "sess-json-a", "sess-json-b"
+    assert cli.main(["--session", a, "join", "--label", "alpha-sh",
+                     "--board", "shared"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--session", b, "join", "--label", "verify-sh",
+                     "--board", "shared"]) == 0
+    capsys.readouterr()
+    # directed message to verify-sh's label
+    assert cli.main(["--session", a, "send", "hello-verifier",
+                     "--to", "verify-sh", "--kind", "verify_request"]) == 0
+    capsys.readouterr()
+    rc = cli.main(["--session", b, "inbox", "--json"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    rows = _json.loads(out)
+    assert isinstance(rows, list) and len(rows) == 1
+    assert rows[0]["body"] == "hello-verifier"
+    assert rows[0]["from_label"] == "alpha-sh"
+    assert rows[0]["kind"] == "verify_request"
+
+
+def test_inbox_json_empty_is_empty_array(tmp_home, capsys):
+    client.ensure_running()
+    sid = "sess-json-empty"
+    assert cli.main(["--session", sid, "join", "--label", "lonely-sh"]) == 0
+    capsys.readouterr()
+    rc = cli.main(["--session", sid, "inbox", "--json"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert _json.loads(out) == []
+
+
 def test_bin_mailbox_shim_runs_from_any_cwd(tmp_path):
     # The shim must resolve its own dir -> ../src, not depend on caller cwd.
     shim = os.path.join(_REPO_ROOT, "bin", "mailbox")

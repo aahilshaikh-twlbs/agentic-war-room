@@ -207,10 +207,41 @@ def patch_war_room_block(profile_root, board=None, **overrides):
     cfg = Path(profile_root) / "config.yaml"
     text = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
 
+    # Whether ANY DEFCON / severity surface is configured. When nothing is set,
+    # the default-valued DEFCON scalars (severity_inference="explicit",
+    # verifier_timeout_s=30) are omitted too, so a non-DEFCON profile renders the
+    # EXACT pre-DEFCON block bytes (D2 / spec §2 "render exactly today's block").
+    _defcon_on = bool(
+        (isinstance(values.get("severity_thresholds"), dict)
+         and values.get("severity_thresholds"))
+        or (values.get("require_verifier_at") or "")
+        or (values.get("verifier_label") or "")
+        or (values.get("escalate_at") or "")
+    )
+    # DEFCON scalar keys that carry a non-empty default; omit them at their
+    # default UNLESS some DEFCON surface is configured (then render the full set
+    # so the operator sees the active knobs).
+    _defcon_default_scalars = {"severity_inference": "explicit",
+                               "verifier_timeout_s": 30}
+
     lines = [_WR_BEGIN, "war_room:"]
     for key in schema.WAR_ROOM_KEYS:
         val = values.get(key)
+        if key == "severity_thresholds":
+            # The one nested case: a dict renders as an indented sub-mapping;
+            # an empty/missing dict is omitted entirely (zero-byte change for
+            # non-DEFCON profiles). Keys render in sorted order for stability.
+            if isinstance(val, dict) and val:
+                lines.append("  severity_thresholds:")
+                for sk in sorted(val):
+                    lines.append("    %s: %s" % (sk, _yaml_scalar(val[sk])))
+            continue
         if val is None or (isinstance(val, str) and val == ""):
+            continue
+        # Omit a default-valued DEFCON scalar when no DEFCON surface is on, so the
+        # block stays byte-identical to the pre-DEFCON render for plain profiles.
+        if (not _defcon_on and key in _defcon_default_scalars
+                and val == _defcon_default_scalars[key]):
             continue
         lines.append("  %s: %s" % (key, _yaml_scalar(val)))
     lines.append(_WR_END)
@@ -418,14 +449,37 @@ def run_setup(profile_root, yes=False, reconfigure=False, sync_only=False,
     if "warroom.enroll" in selected:
         mc = schema.clamp_pct(values.get("warroom.min_confidence", ""))
         board = values.get("warroom.board", "").strip()
-        patch_war_room_block(profile_root, board,
-                             min_confidence=mc, enforce=("warroom.enforce" in selected))
+        parent = values.get("warroom.parent", "").strip()
+        sev_table = {}
+        a1 = schema.clamp_pct(values.get("warroom.severity_alert1", ""), default=0)
+        a2 = schema.clamp_pct(values.get("warroom.severity_alert2", ""), default=0)
+        if a1:
+            sev_table["alert1"] = a1
+        if a2:
+            sev_table["alert2"] = a2
+        if sev_table:
+            sev_table.setdefault("default", mc)
+        verifier_label = values.get("warroom.verifier_label", "").strip()
+        # require_verifier_at defaults to alert1 only when a verifier label and an
+        # alert1 floor are both configured (otherwise leave the path off).
+        require_at = "alert1" if (verifier_label and "alert1" in sev_table) else ""
+        patch_war_room_block(
+            profile_root, board, parent=parent,
+            min_confidence=mc, enforce=("warroom.enforce" in selected),
+            severity_thresholds=sev_table,
+            verifier_label=verifier_label,
+            require_verifier_at=require_at)
         # Cross-agent runtime: bootstrap writes the mailbox: block (same board,
         # keeping war_room.board / mailbox.board in sync per decision #13),
         # persists runtime state, and installs the Claude Code SessionStart hook.
         label = values.get("warroom.label", "").strip() or ident.handle
         from . import enroll
-        st = enroll.bootstrap(profile_root, board, label)
+        # parent kwarg only when supplied: keeps monkeypatched legacy-signature
+        # bootstrap recorders (existing tests) working unchanged.
+        if parent:
+            st = enroll.bootstrap(profile_root, board, label, parent=parent)
+        else:
+            st = enroll.bootstrap(profile_root, board, label)
         # Teach the persona to use mailbox lane-claims ambiently (idempotent).
         patch_persona_decisions(profile_root, _WARROOM_PERSONA_RULE,
                                 sentinel_id="warroom-runtime")

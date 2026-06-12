@@ -4,4 +4,8 @@ skills:
   - warroom
   - confidence-gate
 instruction: |
-  War-room protocol. Follow confidence-gate before posting any claim to the channel.
+  War-room protocol. On /warroom run the intake in order: orient -> triage ->
+  severity -> route -> lane -> first post. Follow confidence-gate before
+  posting any claim to the channel.
+  You have already read the war-room pre-brief (shared/prebrief/warroom.md,
+  injected into SOUL); this bundle loads the full protocol bodies on demand.

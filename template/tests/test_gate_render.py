@@ -27,3 +27,28 @@ def test_with_badge_appends_when_shown():
 
 def test_with_badge_noop_when_hidden():
     assert R.with_badge("body", 0.82, False) == "body"
+
+
+def test_below_severity_floor_abstention_names_severity_and_floor():
+    d = P.Decision(P.ABSTAIN, "below-severity-floor", "a prod log line")
+    msg = R.abstention(d, conf_pct=90, threshold_pct=95)
+    assert "90%" in msg and "95%" in msg
+    assert "Holding back" in msg and "a prod log line" in msg
+
+
+def test_verifier_rejected_abstention_names_gap():
+    d = P.Decision(P.ABSTAIN, "verifier-rejected", "verifier could not reproduce")
+    msg = R.abstention(d)
+    assert "verifier" in msg.lower() and "verifier could not reproduce" in msg
+
+
+def test_verifier_timeout_abstention():
+    d = P.Decision(P.ABSTAIN, "verifier-timeout")
+    msg = R.abstention(d)
+    assert "Holding back" in msg and "verifier" in msg.lower()
+
+
+def test_verifier_unreachable_abstention():
+    d = P.Decision(P.ABSTAIN, "verifier-unreachable")
+    msg = R.abstention(d)
+    assert "Holding back" in msg and "verifier" in msg.lower()

@@ -7,6 +7,7 @@
       "preamble": "templates/claude-head-frontmatter.md",
       "trailer": "templates/claude-head-trailer.md",
       "sections": [
+        {"title": "War-room pre-brief", "source": "shared/prebrief/warroom.md", "local_override": "local/prebrief/warroom.md", "optional": true},
         {"title": "Org context", "source": "shared/org.md"},
         {"title": "Role", "source": "local/persona/role.md"},
         {"title": "Team", "source": "local/persona/team.md"},
@@ -21,6 +22,7 @@
       "preamble": "templates/soul-preamble.md",
       "trailer": "",
       "sections": [
+        {"title": "War-room pre-brief", "source": "shared/prebrief/warroom.md", "local_override": "local/prebrief/warroom.md", "optional": true},
         {"title": "Voice", "source": "local/persona/voice.md"},
         {"title": "Communication", "source": "local/persona/communication.md"},
         {"title": "Decision Heuristics", "source": "local/persona/decisions.md"},

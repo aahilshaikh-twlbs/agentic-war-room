@@ -11,6 +11,7 @@ The mailbox package itself is treated as READ-ONLY; enroll never imports
 """
 import os
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -109,6 +110,11 @@ class EnrollState:
     socket_path: str
     last_check_ts: float
     status: str  # "ok" | "cli-not-found" | "socket-unreachable" | "dry-run"
+    # Federation (optional): the home board's parent link, recorded
+    # engine-side at bootstrap. parent_status: None (no parent requested) |
+    # "ok" | "parent-failed" | "cli-not-found".
+    parent: Optional[str] = None
+    parent_status: Optional[str] = None
 
     def to_dict(self):
         # type: () -> dict
@@ -120,6 +126,8 @@ class EnrollState:
             "socket_path": self.socket_path,
             "last_check_ts": self.last_check_ts,
             "status": self.status,
+            "parent": self.parent,
+            "parent_status": self.parent_status,
         }
 
 
@@ -171,8 +179,33 @@ def _append_log(log_path, state):
         fh.write(line)
 
 
-def bootstrap(profile_root, board, label, dry_run=False, env=None):
-    # type: (Path, str, str, bool, Optional[dict]) -> EnrollState
+def _ensure_parent_link(cli, board, parent, env=None):
+    # type: (Path, str, str, Optional[dict]) -> str
+    """Best-effort: ask the mailbox engine (via the discovered CLI — enroll
+    NEVER imports mailbox.client) to mint the home board and record its
+    parent link: `mailbox create-board <board> --parent <parent>`. The
+    engine requires the parent to already exist (operators build top-down).
+    Returns "ok" | "parent-failed"; never raises — federation is additive
+    and enrollment stays fail-warn."""
+    e = _env(env)
+    sub_env = dict(os.environ)
+    for k in ("MAILBOX_HOME", "MAILBOX_SOCKET"):
+        v = (e.get(k) or "").strip()
+        if v:
+            sub_env[k] = v
+    try:
+        proc = subprocess.run(
+            [str(cli), "create-board", board, "--parent", parent],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=sub_env, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "parent-failed"
+    return "ok" if proc.returncode == 0 else "parent-failed"
+
+
+def bootstrap(profile_root, board, label, dry_run=False, env=None, parent=None):
+    # type: (Path, str, str, bool, Optional[dict], Optional[str]) -> EnrollState
     """Idempotent first-run wiring. Discovers the mailbox CLI, writes the
     `mailbox:` config block, delivers MAILBOX_BOARD/LABEL to <profile>/.env (the
     runtime channel mailbox's own SessionStart hook reads), and persists runtime
@@ -208,6 +241,8 @@ def bootstrap(profile_root, board, label, dry_run=False, env=None):
         socket_path=str(sock),
         last_check_ts=time.time(),
         status=status,
+        parent=(parent or None),
+        parent_status=None,
     )
 
     if dry_run:
@@ -223,6 +258,15 @@ def bootstrap(profile_root, board, label, dry_run=False, env=None):
 
     # Deliver routing to mailbox's hook via <profile>/.env (runtime channel).
     write_runtime_env(profile_root, state, env=env)
+
+    # Federation (optional): record the home board's parent link engine-side.
+    # `.env` stays single-board; the engine resolves federation at read time.
+    if state.parent:
+        if cli is None:
+            state.parent_status = "cli-not-found"
+        else:
+            state.parent_status = _ensure_parent_link(
+                cli, state.board, state.parent, env=env)
 
     local = profile_root / "local"
     local.mkdir(parents=True, exist_ok=True)

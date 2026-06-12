@@ -221,3 +221,11 @@ All hooks fail-open: any internal error logs and allows the operation.
 - Daemon-push to idle sessions (turn-boundary pull is enough for v1).
 - Cross-machine coordination (local-only).
 - A GUI/dashboard; `mailbox ps`/`claims`/`inbox` are CLI-only.
+
+## Related specs
+
+- **Multi-board hierarchical federation** (boards form a tree; `escalate` /
+  `broadcast` scopes; read-time federated views; `tree`/`fleet` operator
+  surface): `docs/superpowers/specs/2026-06-09-awr-multi-board-federation-design.md`
+  at the repo root. Implemented in this package (`boards.py`, `engine.py`,
+  `cli.py`); op surface documented in `docs/internal/contract.md` §18.

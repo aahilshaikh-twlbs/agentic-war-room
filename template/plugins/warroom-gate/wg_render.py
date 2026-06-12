@@ -7,6 +7,10 @@ from wg_policy import Decision
 def abstention(decision, conf_pct=None, threshold_pct=None):
     # type: (Decision, Optional[int], Optional[int]) -> str
     miss = decision.missing or "more grounded evidence"
+    if decision.reason == "below-severity-floor" and conf_pct is not None and threshold_pct is not None:
+        return ("\U0001f6d1 Holding back - this severity needs a higher bar than "
+                "I can clear (%d%% < %d%% for this alert level).\n"
+                "   To clear it I'd need: %s." % (conf_pct, threshold_pct, miss))
     if decision.reason == "below-threshold" and conf_pct is not None and threshold_pct is not None:
         return ("\U0001f6d1 Holding back - not confident enough to post that "
                 "(%d%% < %d%% bar).\n   To clear it I'd need: %s." % (conf_pct, threshold_pct, miss))
@@ -19,6 +23,15 @@ def abstention(decision, conf_pct=None, threshold_pct=None):
     if decision.reason == "empty-body":
         return ("\U0001f6d1 Holding back - a confidence envelope with no content "
                 "to post; nothing to say to the war room.")
+    if decision.reason == "verifier-rejected":
+        return ("\U0001f6d1 Holding back - the independent verifier did not sign off "
+                "on this claim.\n   They flagged: %s." % miss)
+    if decision.reason == "verifier-timeout":
+        return ("\U0001f6d1 Holding back - no independent verifier signoff in time; "
+                "this severity requires a second agent to confirm before posting.")
+    if decision.reason == "verifier-unreachable":
+        return ("\U0001f6d1 Holding back - couldn't reach the independent verifier; "
+                "this severity requires a second-agent signoff, so not posting.")
     return ("\U0001f6d1 Holding back - gate error; not posting unverified info to the war room.")
 
 

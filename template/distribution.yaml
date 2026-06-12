@@ -1,7 +1,7 @@
 # distribution.yaml — MUST sit at the repository root (Hermes has no subdir-install support).
 # Parsed by hermes_cli/profile_distribution.py::DistributionManifest.from_dict (yaml.safe_load).
 name: war-room-agent
-version: 0.1.0
+version: 0.2.0
 description: "Personalizable Hermes war-room agent (Discord + Slack), dual-runtime persona, AWR coordination."
 hermes_requires: ">=0.12.0"
 author: ""
@@ -31,5 +31,7 @@ distribution_owned:
   - SOUL.md
   - config.yaml
   - skills
+  - skill-bundles
+  - shared
   - cron
   - distribution.yaml

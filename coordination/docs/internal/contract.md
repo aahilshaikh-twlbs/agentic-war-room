@@ -540,3 +540,83 @@ We do NOT pre-create owner-less claims; each session claims on bootstrap.
 22. test_e2e.py: 2 simulated sessions → deny-on-live, warn-on-stale, seize, message
     delivery + read receipts, co-location notice, leave releases, gc reaps.
 ```
+
+---
+
+## 18. Multi-board federation (2026-06-09 — additive; §§3, 7, 8, 12 unchanged for v1 callers)
+
+Design: `docs/superpowers/specs/2026-06-09-awr-multi-board-federation-design.md`
+(repo root). Everything here is backward-compatible: no `parent` ⇒ root board,
+no `scope` ⇒ local message, flat boards behave exactly as v1.
+
+### Board meta (`boards/<id>/meta.json`)
+- `parent: <board_id> | null` — NEW. Absent/null = root. Written by
+  `create_board` / `set_parent`; validated (no self-parent, parent must exist,
+  no cycles, depth capped at `boards.MAX_FEDERATION_DEPTH = 8`).
+- `delivery: "pull" | "push"` — NEW, absent = `pull` (read-time federation).
+  `push` boards receive materialized copies of ancestor broadcasts
+  (op `set_delivery`).
+
+### Message (extends §3)
+- `scope: "local" | "escalate" | "broadcast"` — NEW, default `"local"`.
+  **Sparse serialization:** omitted from `to_dict()` when `"local"` so local
+  messages keep the exact §3 JSON shape; `from_dict` restores the default.
+- `origin_message_id: str | null` — NEW (set only on push-delivered copies;
+  sparse: omitted when null).
+
+### boards.py tree helpers (pure; first arg = the engine's boards-meta dict)
+`parent_of(boards, id)`, `ancestors(boards, id)`, `descendants(boards, id)`,
+`subtree(boards, id)`, `is_ancestor(boards, a, b)`, `depth(boards, id)`,
+`height(boards, id)`, `validate_parent(boards, id, parent_id) -> Optional[str]`,
+`MAX_FEDERATION_DEPTH = 8`. All walks are cycle-safe (visited sets).
+
+### New ops (in `protocol.OPS`; engine method names match op names)
+- `create_board(name, parent=None)` → `{"id","name","parent"}` | `{"error"}`
+- `set_parent(board, parent=None, detach=False)` → `{"id","parent","was"}` | `{"error"}`
+- `set_delivery(board, mode)` → `{"id","delivery"}` | `{"error"}` (mode: pull|push)
+- `tree(board=None)` → `{"roots":[node]}` | `{"error"}`;
+  node = `{"id","name","orphan","members","claims","children":[node]}`
+- `fleet(session_id=None, board=None)` → `{"board","rows":[ps-row +
+  "via_board" + "via_name"]}` | `{"error"}`
+Board refs accept an exact board id or a bare name (`org` ⇒ `named-org`).
+
+### Extended ops
+- `send(..., scope="local")` — validates scope (`{"error": "bad-scope: …"}` on a
+  bad value); escalate/broadcast posts are audited to `<state_dir>/federation.log`
+  as `send scope=… board=… from=… body_sha=<sha256[:8]>` (bodies are hashed,
+  never logged). A `broadcast` send fans materialized LOCAL copies out to every
+  descendant board in `delivery: push` mode (`from_label`/`created` preserved;
+  `origin_message_id` carries the source id; dedup is on `origin_message_id` so a
+  replay after a topology edit delivers nothing — no retroactive re-delivery).
+  The return is `{"id": …}` plus `{"delivered": [board_id, …]}` ONLY when at least
+  one push copy was written (v1 callers asserting the bare `{"id": …}` shape are
+  unaffected). `poll_inbox` suppresses the read-time broadcast path for a session's
+  push boards so a pushed message is never double-delivered.
+- `poll_inbox(session_id, federated=True)` — federated view: own boards +
+  descendants' escalations + ancestors' broadcasts; every row is annotated
+  with `origin_board` + `direction` (`"local"|"up"|"down"`). Push-mode boards
+  skip the read-time broadcast path (their copies arrive as local messages).
+  `federated=False` = exact v1 behavior.
+- `ps(session_id, federated=True)` — subtree roll-up (a parent sees its
+  descendants' presence; never the reverse).
+- `list_claims(session_id, scope="board", federated=True)` — `"board"` scope
+  widens to the subtree, matching claims by their HOLDER's presence membership in
+  that subtree (a claim lives on its holder's repo board, outside every named
+  subtree, so it federates by holder, not by `claim.board ∈ subtree`).
+  **Enforcement (`check_write`/`claim_lane`) stays board-scoped** — only
+  visibility federates.
+- `join` — the colocation summary counts live peers across each joined
+  board's subtree (engine-side; the SessionStart hook is unchanged).
+- Engine read helpers (not ops): `federated_messages(board_id)`,
+  `federated_presence(board_id)`, `federated_claims(board_id)`.
+
+### CLI (extends §12)
+`create-board <name> [--parent <p>]`, `set-parent <board> [<p>] [--detach]`,
+`set-delivery <board> (pull|push)`, `tree [<board>]`, `fleet [<board>]`,
+`escalate "<body>" [--to L] [--kind K]` (≡ `send --scope escalate`),
+`broadcast "<body>" …` (≡ `send --scope broadcast`),
+`send --scope (local|escalate|broadcast)`,
+`ps`/`claims`/`inbox` `--federated` (default) / `--local`.
+Topology verbs (`create-board`/`set-parent`/`set-delivery`/`tree`/`fleet`)
+run without a session id. New verbs exit 1 with the engine's `error` string
+on stderr; v1 verbs keep their v1 output contract.
