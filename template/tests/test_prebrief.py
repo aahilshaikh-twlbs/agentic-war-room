@@ -422,3 +422,42 @@ def test_announce_fail_soft_on_oserror(tmp_path, monkeypatch):
     rc = prebrief.announce(root, pack="warroom", version=None, out=out)
     assert rc == 1  # OSError swallowed -> fail-soft
     assert "could not post" in out.getvalue().lower()
+
+
+def test_announce_bounds_send_with_timeout(tmp_path, monkeypatch):
+    # A reachable-but-unresponsive daemon must not block the pack: the send is
+    # bounded by a timeout kwarg matching the enroll sibling idiom (timeout=15).
+    root = _profile_with_pack(tmp_path)
+    captured = {}
+    monkeypatch.setattr(prebrief.enroll, "discover_mailbox_cli",
+                        lambda env=None, repo_search_start=None: Path("/fake/mailbox"))
+
+    class _Res:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, **kw):
+        captured.update(kw)
+        return _Res()
+
+    monkeypatch.setattr(prebrief.subprocess, "run", fake_run)
+    prebrief.announce(root, pack="warroom", version=None, out=io.StringIO())
+    assert captured.get("timeout") == 15
+
+
+def test_announce_fail_soft_on_timeout(tmp_path, monkeypatch):
+    # TimeoutExpired is a SubprocessError, NOT an OSError -- it must still be
+    # swallowed so a hung daemon never raises out of the fail-soft contract.
+    root = _profile_with_pack(tmp_path)
+    monkeypatch.setattr(prebrief.enroll, "discover_mailbox_cli",
+                        lambda env=None, repo_search_start=None: Path("/fake/mailbox"))
+
+    def hang(argv, **kw):
+        raise prebrief.subprocess.TimeoutExpired(cmd=argv, timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(prebrief.subprocess, "run", hang)
+    out = io.StringIO()
+    rc = prebrief.announce(root, pack="warroom", version=None, out=out)
+    assert rc == 1  # TimeoutExpired swallowed -> fail-soft
+    assert "could not post" in out.getvalue().lower()

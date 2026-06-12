@@ -234,8 +234,11 @@ def announce(profile_root, pack="warroom", version=None, out=None, env=None):
     `hermes profile update` + session restart; this is only a soft signal.
 
     Fail-soft by contract: a missing CLI, a non-zero exit (e.g. no daemon / no
-    session), or an OSError prints a warning and returns 1 WITHOUT raising. It
-    never blocks the pack. The version defaults to the pack doc's pack_version.
+    session), an OSError, or a subprocess error (including a TimeoutExpired
+    when a reachable-but-unresponsive daemon would otherwise hang the call)
+    prints a warning and returns 1 WITHOUT raising. The send is bounded by a
+    timeout so it never blocks the pack. The version defaults to the pack
+    doc's pack_version.
     """
     out = out if out is not None else sys.stdout
     profile_root = Path(profile_root)
@@ -255,8 +258,9 @@ def announce(profile_root, pack="warroom", version=None, out=None, env=None):
     argv = [str(cli), "--session", _ANNOUNCE_SESSION, "send", "--to", "*",
             "--kind", "note", body]
     try:
-        res = subprocess.run(argv, capture_output=True, text=True, env=env)
-    except OSError as exc:
+        res = subprocess.run(argv, capture_output=True, text=True, env=env,
+                             timeout=15)
+    except (OSError, subprocess.SubprocessError) as exc:
         out.write("announce: could not post nudge (%s)\n" % exc)
         return 1
     if res.returncode != 0:
