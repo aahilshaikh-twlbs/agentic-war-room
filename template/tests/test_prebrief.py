@@ -461,3 +461,67 @@ def test_announce_fail_soft_on_timeout(tmp_path, monkeypatch):
     rc = prebrief.announce(root, pack="warroom", version=None, out=out)
     assert rc == 1  # TimeoutExpired swallowed -> fail-soft
     assert "could not post" in out.getvalue().lower()
+
+
+# --------------------------------------------------------------------------- #
+# Task 11 -- CLI dispatch + exit-code matrix (mirrors test_assimilate matrix)
+# --------------------------------------------------------------------------- #
+from warroom_setup import cli  # noqa: E402
+
+
+def test_cli_prebrief_help_lists_verbs():
+    parser = cli._build_parser()
+    ns = parser.parse_args(["prebrief", "show"])
+    assert ns.cmd == "prebrief" and ns.verb == "show"
+    ns = parser.parse_args(["prebrief", "pin", "--pack", "warroom"])
+    assert ns.verb == "pin" and ns.pack == "warroom"
+    ns = parser.parse_args(["prebrief", "announce", "--version", "2.0.0"])
+    assert ns.verb == "announce" and ns.version == "2.0.0"
+    ns = parser.parse_args(["prebrief", "unpin"])
+    assert ns.verb == "unpin"
+
+
+def test_cli_prebrief_verify_dispatches(tmp_path, monkeypatch, capsys):
+    root = _profile_with_pack(tmp_path)
+    monkeypatch.setattr(cli, "_profile_root", lambda: root)
+    rc = cli.main(["prebrief", "verify"])
+    assert rc == 0
+    assert "OK" in capsys.readouterr().out
+
+
+def test_cli_prebrief_show_dispatches(tmp_path, monkeypatch, capsys):
+    root = _profile_with_pack(tmp_path)
+    monkeypatch.setattr(cli, "_profile_root", lambda: root)
+    rc = cli.main(["prebrief", "show"])
+    assert rc == 0
+    assert "pack: warroom" in capsys.readouterr().out
+
+
+def test_cli_prebrief_no_verb_returns_2(capsys):
+    rc = cli.main(["prebrief"])
+    assert rc == 2
+
+
+def test_cli_prebrief_exit_code_matrix(tmp_path, monkeypatch):
+    # 0 -- verify healthy pack
+    healthy = _profile_with_pack(tmp_path / "healthy")
+    monkeypatch.setattr(cli, "_profile_root", lambda: healthy)
+    assert cli.main(["prebrief", "verify"]) == 0
+
+    # 1 -- verify broken pack (missing member skills)
+    broken = _profile_with_pack(tmp_path / "broken", with_skills=False)
+    monkeypatch.setattr(cli, "_profile_root", lambda: broken)
+    assert cli.main(["prebrief", "verify"]) == 1
+
+    # 1 -- show with no pack doc at all
+    nodoc = _profile_with_pack(tmp_path / "nodoc", with_doc=False)
+    monkeypatch.setattr(cli, "_profile_root", lambda: nodoc)
+    assert cli.main(["prebrief", "show"]) == 1
+
+    # 0 -- pin then unpin a healthy pack
+    monkeypatch.setattr(cli, "_profile_root", lambda: healthy)
+    assert cli.main(["prebrief", "pin"]) == 0
+    assert cli.main(["prebrief", "unpin"]) == 0
+
+    # 2 -- sync with no identity
+    assert cli.main(["prebrief", "sync"]) == 2

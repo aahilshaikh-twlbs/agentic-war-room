@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from . import assimilate as assimilate_mod
-from . import enroll, setup
+from . import enroll, prebrief as prebrief_mod, setup
 from .__init__ import __version__
 
 
@@ -46,6 +46,15 @@ def _build_parser():
                    help="opt into confidence-gate enforcement (default off; gentler on existing profiles)")
     a.add_argument("--yes", action="store_true",
                    help="headless: suppress the proceed-confirm (needs --no-walkthrough or pre-set creds)")
+
+    pb = sub.add_parser("prebrief",
+                        help="inspect / verify / sync / pin / announce the pre-brief pack")
+    pb.add_argument("verb", nargs="?", default=None,
+                    choices=["show", "verify", "sync", "pin", "unpin", "announce"],
+                    help="prebrief action")
+    pb.add_argument("--pack", default="warroom", help="pack name (default: warroom)")
+    pb.add_argument("--version", default=None,
+                    help="announce: version to advertise (default: pack doc version)")
     return parser
 
 
@@ -118,6 +127,33 @@ def cmd_assimilate(args):
     )
 
 
+def cmd_prebrief(args):
+    # type: (argparse.Namespace) -> int
+    """Dispatch `warroom prebrief <verb>`. Exit codes:
+      0 — verb succeeded
+      1 — verify failed / show found no doc / announce could not post
+      2 — no verb, or sync with no identity
+    """
+    if args.verb is None:
+        print("usage: warroom prebrief {show|verify|sync|pin|unpin|announce}")
+        return 2
+    root = _profile_root()
+    if args.verb == "show":
+        return prebrief_mod.show(root, args.pack)
+    if args.verb == "verify":
+        return prebrief_mod.verify(root, args.pack)
+    if args.verb == "sync":
+        return prebrief_mod.sync(root)
+    if args.verb == "pin":
+        return prebrief_mod.pin(root, args.pack)
+    if args.verb == "unpin":
+        return prebrief_mod.unpin(root, args.pack)
+    if args.verb == "announce":
+        return prebrief_mod.announce(root, args.pack, version=args.version)
+    print("usage: warroom prebrief {show|verify|sync|pin|unpin|announce}")
+    return 2
+
+
 def main(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -135,5 +171,7 @@ def main(argv=None):
         return cmd_enroll(args)
     if args.cmd == "assimilate":
         return cmd_assimilate(args)
+    if args.cmd == "prebrief":
+        return cmd_prebrief(args)
     parser.print_help()
     return 2
