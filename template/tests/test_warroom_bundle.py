@@ -90,3 +90,18 @@ def test_sanitize_check_scans_shared_prebrief():
     assert ".md" in sanitize_check.SCAN_SUFFIXES
     scanned = list(sanitize_check._iter_files(str(ROOT / "shared")))
     assert any(p.endswith("prebrief/warroom.md") for p in scanned)
+
+
+def test_bundle_instruction_references_prebrief_without_regressing_intake():
+    bundle = (ROOT / "skill-bundles" / "warroom.yaml").read_text(encoding="utf-8")
+    m = re.search(r"^instruction:\s*\|\n((?:[ \t]+.*\n?)*)", bundle, re.M)
+    assert m, "bundle must carry a block-scalar instruction"
+    instr = m.group(1).lower()
+    # pre-brief reference is present
+    assert "pre-brief" in instr or "prebrief" in instr
+    # AND the L1 intake order is NOT regressed (same guard L1 ships)
+    order = ["orient", "triage", "severity", "route", "lane", "first post"]
+    idxs = [instr.find(w) for w in order]
+    assert -1 not in idxs, "intake steps must still be named: %r" % order
+    assert idxs == sorted(idxs), "intake steps must stay in order"
+    assert "confidence-gate" in instr
