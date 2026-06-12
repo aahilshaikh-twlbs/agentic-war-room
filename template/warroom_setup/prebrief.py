@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from . import enroll
 from . import persona_sync
 from .agent_model import load as load_identity
 
@@ -220,3 +221,47 @@ def sync(profile_root, out=None):
         return 2
     return persona_sync.run(profile_root / "manifest.json", profile_root,
                             ident, check=False)
+
+
+_ANNOUNCE_SESSION = "warroom-prebrief-announce"
+
+
+def announce(profile_root, pack="warroom", version=None, out=None, env=None):
+    # type: (Path, str, Optional[str], object, Optional[dict]) -> int
+    """Opt-in fleet nudge (P-2). Posts a board broadcast via the discovered
+    mailbox CLI: 'pre-brief pack <pack> updated to v<ver>; restart to pick it
+    up'. PULL semantics are unchanged — content still arrives via the next
+    `hermes profile update` + session restart; this is only a soft signal.
+
+    Fail-soft by contract: a missing CLI, a non-zero exit (e.g. no daemon / no
+    session), or an OSError prints a warning and returns 1 WITHOUT raising. It
+    never blocks the pack. The version defaults to the pack doc's pack_version.
+    """
+    out = out if out is not None else sys.stdout
+    profile_root = Path(profile_root)
+    ver = version
+    if ver is None:
+        try:
+            ver = parse_pack(profile_root, pack).get("pack_version") or "?"
+        except (FileNotFoundError, ValueError):
+            ver = "?"
+    cli = enroll.discover_mailbox_cli(env=env, repo_search_start=profile_root)
+    if cli is None:
+        out.write("announce: mailbox CLI not found; skipping fleet nudge "
+                  "(content still arrives via `hermes profile update`)\n")
+        return 1
+    body = ("pre-brief pack %r updated to v%s; restart your session to pick it "
+            "up (run `hermes profile update` first)" % (pack, ver))
+    argv = [str(cli), "--session", _ANNOUNCE_SESSION, "send", "--to", "*",
+            "--kind", "note", body]
+    try:
+        res = subprocess.run(argv, capture_output=True, text=True, env=env)
+    except OSError as exc:
+        out.write("announce: could not post nudge (%s)\n" % exc)
+        return 1
+    if res.returncode != 0:
+        detail = (res.stderr or res.stdout or "").strip()
+        out.write("announce: mailbox send failed (%s); nudge not posted\n" % detail)
+        return 1
+    out.write("announce: posted pre-brief v%s nudge to the board\n" % ver)
+    return 0

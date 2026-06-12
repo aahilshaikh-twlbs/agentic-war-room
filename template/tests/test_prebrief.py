@@ -331,3 +331,94 @@ def test_sync_no_identity_returns_2(tmp_path):
     out = io.StringIO()
     assert prebrief.sync(root, out=out) == 2
     assert "warroom setup" in out.getvalue()
+
+
+# --------------------------------------------------------------------------- #
+# Task 10 -- announce (opt-in mailbox nudge; fail-soft)
+# --------------------------------------------------------------------------- #
+def test_announce_invokes_mailbox_send(tmp_path, monkeypatch):
+    root = _profile_with_pack(tmp_path)
+    captured = {}
+
+    def fake_discover(env=None, repo_search_start=None):
+        return Path("/fake/mailbox")
+
+    class _Res:
+        returncode = 0
+        stdout = "sent"
+        stderr = ""
+
+    def fake_run(argv, **kw):
+        captured["argv"] = argv
+        return _Res()
+
+    monkeypatch.setattr(prebrief.enroll, "discover_mailbox_cli", fake_discover)
+    monkeypatch.setattr(prebrief.subprocess, "run", fake_run)
+    out = io.StringIO()
+    rc = prebrief.announce(root, pack="warroom", version=None, out=out)
+    assert rc == 0
+    argv = captured["argv"]
+    assert argv[0] == "/fake/mailbox"
+    assert "--session" in argv and "send" in argv
+    # the broadcast body names the version it resolved from the pack doc
+    body = argv[-1]
+    assert "1.0.0" in body and "restart" in body.lower()
+
+
+def test_announce_uses_explicit_version_when_given(tmp_path, monkeypatch):
+    root = _profile_with_pack(tmp_path)
+    captured = {}
+    monkeypatch.setattr(prebrief.enroll, "discover_mailbox_cli",
+                        lambda env=None, repo_search_start=None: Path("/fake/mailbox"))
+
+    class _Res:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(prebrief.subprocess, "run",
+                        lambda argv, **kw: captured.__setitem__("argv", argv) or _Res())
+    prebrief.announce(root, pack="warroom", version="2.5.0", out=io.StringIO())
+    assert "2.5.0" in captured["argv"][-1]
+
+
+def test_announce_fail_soft_when_cli_absent(tmp_path, monkeypatch):
+    root = _profile_with_pack(tmp_path)
+    monkeypatch.setattr(prebrief.enroll, "discover_mailbox_cli",
+                        lambda env=None, repo_search_start=None: None)
+    out = io.StringIO()
+    rc = prebrief.announce(root, pack="warroom", version=None, out=out)
+    assert rc == 1  # non-zero, but did NOT raise
+    assert "mailbox CLI not found" in out.getvalue()
+
+
+def test_announce_fail_soft_on_nonzero_send(tmp_path, monkeypatch):
+    root = _profile_with_pack(tmp_path)
+    monkeypatch.setattr(prebrief.enroll, "discover_mailbox_cli",
+                        lambda env=None, repo_search_start=None: Path("/fake/mailbox"))
+
+    class _Res:
+        returncode = 1
+        stdout = ""
+        stderr = "no session id (run inside a Claude session)"
+
+    monkeypatch.setattr(prebrief.subprocess, "run", lambda argv, **kw: _Res())
+    out = io.StringIO()
+    rc = prebrief.announce(root, pack="warroom", version=None, out=out)
+    assert rc == 1
+    assert "no session" in out.getvalue()
+
+
+def test_announce_fail_soft_on_oserror(tmp_path, monkeypatch):
+    root = _profile_with_pack(tmp_path)
+    monkeypatch.setattr(prebrief.enroll, "discover_mailbox_cli",
+                        lambda env=None, repo_search_start=None: Path("/fake/mailbox"))
+
+    def boom(argv, **kw):
+        raise OSError("exec failed")
+
+    monkeypatch.setattr(prebrief.subprocess, "run", boom)
+    out = io.StringIO()
+    rc = prebrief.announce(root, pack="warroom", version=None, out=out)
+    assert rc == 1  # OSError swallowed -> fail-soft
+    assert "could not post" in out.getvalue().lower()
