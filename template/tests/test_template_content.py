@@ -175,3 +175,25 @@ def test_distribution_version_bumped_past_initial():
     m = re.search(r"^version:\s*(\S+)\s*$", dist, re.M)
     assert m, "distribution.yaml must carry a version"
     assert m.group(1) != "0.1.0", "version must be bumped on a pack change"
+
+
+# ---- Pre-brief pack: README documents the feature + propagation ----
+
+def test_readme_documents_prebrief_pack():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "## Pre-brief pack" in readme
+    assert "shared/prebrief/warroom.md" in readme
+    assert "/warroom" in readme                       # full-protocol expansion
+    assert "hermes profile update" in readme          # primary propagation
+    assert "hermes skills tap" in readme              # secondary (foreign profiles)
+    assert "local/prebrief/" in readme                # pinning
+    assert "warroom prebrief" in readme               # operator CLI
+    assert "announce" in readme                       # opt-in fleet nudge
+
+
+def test_readme_documents_prebrief_slug_collision_and_nonmember():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    # slug-collision note (bundle wins over the like-named skill — keep it)
+    assert "bundle wins" in readme.lower()
+    # warroom-verifier is a deliberate NON-member (role-specific)
+    assert "warroom-verifier" in readme

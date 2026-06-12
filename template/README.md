@@ -188,6 +188,100 @@ Lanes (named work-units for dogpile coordination) are managed from the shell:
 - `mailbox.mailbox_home` (optional) — blank = runtime default `~/.claude/mailbox`.
 - `mailbox.socket_path` (optional) — blank = `<mailbox_home>/mailboxd.sock`.
 
+## Pre-brief pack
+
+Every war-room agent has read the same baseline briefing before its first
+message: the **pre-brief pack**. A pack is a trio:
+
+- **Loader** — `skill-bundles/warroom.yaml`, a Hermes bundle that loads the
+  member skills under one `/warroom` slash command.
+- **Bodies** — the member skills `skills/warroom/SKILL.md` and
+  `skills/confidence-gate/SKILL.md`.
+- **Briefing + version anchor** — `shared/prebrief/warroom.md`, the
+  human-readable briefing and the manifest-of-record (`pack_version`,
+  `members`, `summary`).
+
+**How it loads on startup.** Nothing auto-loads a bundle on session start —
+Hermes loads a bundle only when you type `/warroom`. So the *briefing* is
+injected into the always-loaded `SOUL.md` and the Claude head agent file via
+persona-sync (a "War-room pre-brief" section, sourced from
+`shared/prebrief/warroom.md`). That guarantees the briefing + the condensed
+gate contract are in context on turn 1 with **zero `~/.claude/settings.json`
+edits**. The full skill bodies are a `/warroom` expansion away when you need
+the verbatim commands. Run `bash scripts/setup.sh --sync` (or `warroom setup
+--sync`) after editing the pack doc to regenerate the section.
+
+**Members.** The pack members are exactly `confidence-gate` and `warroom`.
+`skills/warroom-verifier/SKILL.md` is a deliberate **non-member**: it is the
+role-specific verifier protocol that only verifier-role agents need, not part
+of the baseline every agent reads.
+
+**Slug collision is intentional.** A member skill is named `warroom` and the
+bundle is also named `warroom`. When a bundle and a skill share a slug the
+**bundle wins** — `/warroom` loads the bundle (verified Hermes behavior). Do
+not "fix" this by renaming; it preserves the `/warroom` UX.
+
+**Operator CLI.** `warroom prebrief` (stdlib, no deps):
+
+| Verb | Purpose |
+|---|---|
+| `warroom prebrief show` | pack name, version, member install status, pin gap |
+| `warroom prebrief verify` | integrity check (members resolve, bundle consistent, version mirror); exit non-zero on a broken pack |
+| `warroom prebrief sync` | regenerate the SOUL/head pre-brief section |
+| `warroom prebrief pin` / `unpin` | freeze/unfreeze the briefing via `local/prebrief/warroom.md` |
+| `warroom prebrief announce [--version <v>]` | opt-in fleet nudge over the mailbox |
+
+**Pinning (freeze against upstream).** `warroom prebrief pin` copies
+`shared/prebrief/warroom.md` to `local/prebrief/warroom.md`. The `local/`
+overlay is user-owned and **survives `hermes profile update`**, and
+persona-sync prefers `local/prebrief/warroom.md` over the shipped doc. Use it
+to freeze the briefing while a pack update is pending your review;
+`warroom prebrief show` reports the pinned-vs-available version gap.
+`warroom prebrief unpin` removes the override so upstream governs again.
+
+### Propagating a pack update
+
+**Primary — template-born agents: `hermes profile update`.** The whole
+`template/` tree is the distribution. A pack change is a new commit + a bumped
+`distribution.yaml::version`. The operator runs `hermes profile update
+<name>`; the distribution-owned tree (skills, the bundle, the pack doc) is
+replaced in place while `config.yaml`, `.env`, and the entire `local/` overlay
+(including any pin) are preserved. `skill-bundles` and `shared` are declared in
+`distribution_owned` so this stays explicit. The pack moves atomically —
+bundle, bodies, and doc travel together. A change lands on the **next session**
+of an updated profile; this is pull, not push. Fleet recipe:
+
+```sh
+for p in alpha-sh beta-sh foreign-sh; do hermes profile update "$p"; done
+```
+
+(A cron over your war-room profiles is the operator's call.)
+
+**Secondary — foreign / assimilated profiles: `hermes skills tap`.** A profile
+that was NOT installed from this distribution (e.g. one that ran
+`warroom assimilate`) cannot receive the pack via `profile update`. For those,
+an individual sharpened skill (e.g. an updated `confidence-gate`) can be
+published as a first-party hub skill and pulled per-skill:
+
+```sh
+hermes skills tap add <owner>/<repo>          # register a source (untrusted by default)
+hermes skills install <owner>/<repo>/<skill>  # pull-install (security-scanned)
+hermes skills update [<name>]                 # pull the latest for installed skills
+```
+
+This channel is **per-skill, pull-based, and security-scanned** — the bundle
+and the pack doc do NOT travel with a single tapped skill, so it is the right
+tool for distributing one sharpened skill to a heterogeneous fleet, not for
+moving the whole pack. **Never add a tap you do not control or trust;** the
+shipped `skills/.hub/taps.json` stays empty and the pack never adds a tap on
+your behalf. The first-party hub repo itself is a separate effort (deferred).
+
+**Opt-in nudge.** `warroom prebrief announce` posts a soft board signal
+("pre-brief pack updated to v<x>; restart to pick it up") via the mailbox. It
+is a *signal*, not a push of content — the content still arrives via the next
+`hermes profile update` + session restart. It fails soft (warns, never blocks)
+when the mailbox CLI or daemon is unavailable.
+
 ## MCP servers
 MCP servers are registered in `config.yaml` under a top-level `mcp_servers:` block —
 there is **no separate `mcp.json`** in the profile root. Add servers as:
