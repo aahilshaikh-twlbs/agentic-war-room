@@ -259,3 +259,75 @@ def test_verify_missing_doc_returns_1(tmp_path):
     out = io.StringIO()
     assert prebrief.verify(root, "warroom", out=out) == 1
     assert "pack doc" in out.getvalue().lower()
+
+
+# --------------------------------------------------------------------------- #
+# Task 9 -- sync / pin / unpin
+# --------------------------------------------------------------------------- #
+def test_pin_copies_shared_to_local_atomically(tmp_path):
+    root = _profile_with_pack(tmp_path)
+    out = io.StringIO()
+    assert prebrief.pin(root, "warroom", out=out) == 0
+    pin = root / "local" / "prebrief" / "warroom.md"
+    assert pin.is_file()
+    assert pin.read_text(encoding="utf-8") == \
+        (root / "shared" / "prebrief" / "warroom.md").read_text(encoding="utf-8")
+    assert "pinned" in out.getvalue()
+
+
+def test_pin_leaves_no_tmp_file(tmp_path):
+    root = _profile_with_pack(tmp_path)
+    prebrief.pin(root, "warroom", out=io.StringIO())
+    leftovers = list((root / "local" / "prebrief").glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_pin_missing_source_returns_1(tmp_path):
+    root = _profile_with_pack(tmp_path, with_doc=False)
+    out = io.StringIO()
+    assert prebrief.pin(root, "warroom", out=out) == 1
+
+
+def test_unpin_removes_local_override(tmp_path):
+    root = _profile_with_pack(tmp_path)
+    prebrief.pin(root, "warroom", out=io.StringIO())
+    out = io.StringIO()
+    assert prebrief.unpin(root, "warroom", out=out) == 0
+    assert not (root / "local" / "prebrief" / "warroom.md").exists()
+    assert "unpinned" in out.getvalue()
+
+
+def test_unpin_when_not_pinned_is_noop_zero(tmp_path):
+    root = _profile_with_pack(tmp_path)
+    out = io.StringIO()
+    assert prebrief.unpin(root, "warroom", out=out) == 0
+    assert "not pinned" in out.getvalue()
+
+
+def test_sync_delegates_to_persona_sync(tmp_path, monkeypatch):
+    root = _profile_with_pack(tmp_path)
+    (root / "local").mkdir(exist_ok=True)
+    (root / "local" / "agent.json").write_text(
+        json.dumps({"agent_name": "aria", "handle": "aria-sh",
+                    "display_name": "Aria", "model": "opus",
+                    "specialist_prefix": "aria", "agent_fingerprint": "aria-xyz"}),
+        encoding="utf-8")
+    calls = {}
+
+    def fake_run(manifest, repo_root, ident, check=False):
+        calls["manifest"] = Path(manifest)
+        calls["repo_root"] = Path(repo_root)
+        return 0
+
+    monkeypatch.setattr(prebrief.persona_sync, "run", fake_run)
+    (root / "manifest.json").write_text('{"header":"h","outputs":[]}', encoding="utf-8")
+    out = io.StringIO()
+    assert prebrief.sync(root, out=out) == 0
+    assert calls["manifest"] == root / "manifest.json"
+
+
+def test_sync_no_identity_returns_2(tmp_path):
+    root = _profile_with_pack(tmp_path)
+    out = io.StringIO()
+    assert prebrief.sync(root, out=out) == 2
+    assert "warroom setup" in out.getvalue()

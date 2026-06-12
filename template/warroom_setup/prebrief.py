@@ -17,6 +17,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from . import persona_sync
+from .agent_model import load as load_identity
+
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 
@@ -152,3 +155,68 @@ def verify(profile_root, pack="warroom", out=None):
     out.write("OK: pack %r v%s, %d members, bundle consistent\n"
               % (info["pack"], info["pack_version"], len(info["members"])))
     return 0
+
+
+def _atomic_copy_text(src, dst, mode=0o600):
+    # type: (Path, Path, int) -> None
+    """Copy src -> dst atomically (temp + os.replace) under the same dir."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    text = Path(src).read_text(encoding="utf-8")
+    tmp = str(dst) + ".tmp"
+    try:
+        Path(tmp).write_text(text, encoding="utf-8")
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
+        os.replace(tmp, str(dst))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def pin(profile_root, pack="warroom", out=None):
+    # type: (Path, str, object) -> int
+    """Freeze the briefing: copy shared/prebrief/<pack>.md ->
+    local/prebrief/<pack>.md (user-owned, survives `hermes profile update`).
+    Atomic write. Returns 1 if the shared source is absent."""
+    out = out if out is not None else sys.stdout
+    src = pack_doc_path(profile_root, pack)
+    if not src.is_file():
+        out.write("cannot pin %r: no shared pack doc at %s\n" % (pack, src))
+        return 1
+    dst = local_pin_path(profile_root, pack)
+    _atomic_copy_text(src, dst)
+    out.write("pinned %r -> %s\n" % (pack, dst))
+    return 0
+
+
+def unpin(profile_root, pack="warroom", out=None):
+    # type: (Path, str, object) -> int
+    """Remove the local pin so the shared doc governs again. No-op (exit 0)
+    when not pinned."""
+    out = out if out is not None else sys.stdout
+    dst = local_pin_path(profile_root, pack)
+    if not dst.exists():
+        out.write("%r not pinned (no %s)\n" % (pack, dst))
+        return 0
+    os.remove(str(dst))
+    out.write("unpinned %r (removed %s)\n" % (pack, dst))
+    return 0
+
+
+def sync(profile_root, out=None):
+    # type: (Path, object) -> int
+    """Regenerate SOUL.md + the Claude head from the manifest (delegates to
+    persona_sync.run). Returns 2 when no identity exists yet."""
+    out = out if out is not None else sys.stdout
+    profile_root = Path(profile_root)
+    ident = load_identity(profile_root / "local" / "agent.json")
+    if ident is None:
+        out.write("no identity yet - run `warroom setup` first\n")
+        return 2
+    return persona_sync.run(profile_root / "manifest.json", profile_root,
+                            ident, check=False)
